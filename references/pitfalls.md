@@ -1,95 +1,86 @@
-# 踩坑手册：症状 → 根因 → 修复
+# 踩坑手册
 
-全部来自 handy-shulkers 实际发生过的 bug，每条都有源码级根因。
+分两部分：
 
-## A. 构建环境
+- **第一部分：通用坑**——任何 Minecraft 模组项目都可能遇到，直接对照使用。
+- **第二部分：案例研究**——来自组织实战项目的特有机制 bug，**结论不可复用到别的 mod**；保留价值在于示范排查方法（如何用反编译找到原版内部约束、如何设计防御性清理）。
 
-### A1. Loom 1.18+ 报 "requires JVM 25"
-- 症状：升级 fabric-loom 后 Gradle 起不来。
-- 根因：Loom 1.18 用 Java 25 FFM API 重写了 native 库，Gradle JVM 必须 25+。
-- 修复：做 MC 1.21.x 就钉 `fabric-loom 1.17.21` + Gradle 9.5.1 + JDK 21。
+---
 
-### A2. NeoForge 依赖解析失败
-- 症状：`net.neoforged.moddev` 插件或 neoform-runtime 下载不到。
-- 根因：机器全局 `~/.gradle/init.gradle` 强制阿里云镜像，镜像上没有 NeoForge 生态的构件。
-- 修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
+## 第一部分：通用坑（任何模组都会遇到）
 
-### A3. wrapper 首跑卡住/超时
-- 症状：隔离 GRADLE_USER_HOME 后 services.gradle.org 下载超时。
-- 修复：从 `~/.gradle/wrapper/dists/` 预拷 `gradle-9.5.1-bin` 到隔离目录同名路径。
+### 构建环境
 
-### A4. 推不了 `.github/workflows/`
-- 根因：OAuth token 缺 `workflow` scope。
-- 修复：CI 文件先放 `ci/build.yml`；用户执行 `gh auth refresh -h github.com -s workflow` 后再移动提交。
-- 另：upload-artifact v4 **artifact 名不允许 `/`**——matrix 里 project 路径和 artifact 名要用两条平行数组。
+**A1. Loom 1.18+ 报 "requires JVM 25"**
+升级 fabric-loom 后 Gradle 起不来。Loom 1.18 用 Java 25 FFM API 重写了 native 层，Gradle JVM 必须 25+。做 MC 1.21.x 就钉 `fabric-loom 1.17.21` + Gradle 9.5.1 + JDK 21。
 
-## B. 交互模型（服务端权威）
+**A2. NeoForge 依赖解析失败**
+机器全局 `~/.gradle/init.gradle` 强制镜像（如阿里云）时，NeoForge 插件/依赖在镜像上不存在。修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
 
-### B1. 界面"闪一下就关"
-- 根因（两个叠加）：① 客户端伪造 `SUCCESS` 吞掉 use 包；② 便携菜单用原版 `stillValid(access)`，它每 tick 检查锚点方块是不是对应方块，玩家脚下不是工作台 → 立即关闭。
-- 修复：客户端一律 `PASS`；子类菜单覆写 `stillValid(p) { return p.isAlive(); }`。
+**A3. wrapper 首跑下载超时**
+隔离 GRADLE_USER_HOME 后 services.gradle.org 下载超时。修复：从 `~/.gradle/wrapper/dists/` 预拷对应发行包（如 `gradle-9.5.1-bin`）到隔离目录同名路径。
 
-### B2. 对着有自己界面的方块右键行为冲突
-- 规则：`level.getBlockState(pos).getMenuProvider(level, pos) != null` 就让路（原版行为优先），只在瞄准无菜单方块或空气时接管手持物品。
+**A4. CI 相关两连坑**
+① 推 `.github/workflows/` 需要 token 有 `workflow` scope（`gh auth refresh -h github.com -s workflow`），否则先放 `ci/` 目录；② upload-artifact v4 的 **artifact 名不允许 `/`**——matrix 里项目路径和 artifact 名用两条平行数组。
 
-### B3. 潜行语义
-- 用 XOR 门：`if (config.requireSneak != player.isShiftKeyDown()) return PASS;`——默认"不潜行触发、潜行放置"，配置反转，永不出现"两种都触发/都不触发"。
+### 交互模型
 
-### B4. 假玩家（自动化）误触
-- `player.getClass() != ServerPlayer.class` 判定假玩家，配置开关 `allowFakePlayers` 默认 false；用 `getClass()` 精确比较而不是 `instanceof`（防子类绕过）。
+**B1. 客户端伪造成功会吞掉后续交互**
+客户端事件处理器返回 `SUCCESS` 会让客户端认为已完成、不再发 use 包到服务端，表现为"界面闪一下就关""功能时灵时不灵"。规则：客户端一律 `PASS`，所有真实动作在服务端做。
 
-## C. 手持容器（数据安全）
+**B2. 没有方块锚点的菜单闪关**
+从物品/远程打开任何菜单（便携工作台、随身容器类功能），原版 `stillValid(ContainerLevelAccess)` 每 tick 检查锚点方块类型，玩家脚下不是对应方块就立即关闭。子类覆写 `stillValid(p) { return p.isAlive(); }`。
 
-### C1. 相同 NBT 的两个盒子改错堆栈
-- 根因：`Inventory.contains` 用**组件相等**判断，两个内容一样的盒子会互相"顶替"。
-- 修复：`stillValid` 里用**引用相等**（`inventory.getItem(i) == box`）逐槽扫描。
+**B3. 与原版方块行为冲突**
+接管右键前先让路：`level.getBlockState(pos).getMenuProvider(level, pos) != null` 说明方块有自己的界面，保持原版行为。
 
-### C2. 大盒子静默丢数据
-- 根因：菜单最多 6 行 54 格，超容量盒子的第 55 格起在首次写回时被静默丢弃。
-- 修复：打开前容量检查（EntityBlock 无头构造探针 + CONTAINER 组件计数），超限拒绝 + action bar 提示（en_us/zh_cn 双语）。
+**B4. 假玩家（自动化）误触**
+判定 fake player 用 `player.getClass() != ServerPlayer.class`（精确比较，防子类绕过），并给配置开关；别用 `instanceof`。
 
-### C3. 盒子套盒子数据损坏
-- 修复：菜单槽位 `mayPlace` 拒绝带 `DataComponents.CONTAINER` 的物品；`clicked()` 拦住"把被打开的盒子放进自己"。
+**B5. 潜行语义组合**
+用 XOR 门表达"默认不潜行触发、潜行放置；配置反转"：`if (config.requireSneak != player.isShiftKeyDown()) return PASS;`——永不出现两种都触发/都不触发。
 
-### C4. 配置项 true 静默变 false
-- 根因：Gson 反序列化不跑构造器，`fromJson` 后缺失键的字段保持默认构造值——若默认值来自字段初始化器而 JSON 没有该键，行为不变；但把 `fromJson` 结果直接当实例用时，任何构造器逻辑（归一化、校验）都被跳过。
-- 修复：**逐字段手写 JSON 解析 + 显式默认值 + 越界归一化**（如 forceRows 不在 1..6 就回 -1）。
+### 数据安全
 
-## D. 手持床原地睡觉
+**C1. 配置项静默复位**
+依赖 Gson 自动反序列化时构造器不运行，缺键/旧文件会让字段回到非预期值。逐字段手写解析 + 显式默认值 + 越界归一化（如 `forceRows` 不在 1..6 就回 -1）。
 
-### D1. 右键床"没反应"/瞬间醒
-- 根因：`LivingEntity.tick` 每 tick `checkBedExists()`（`getBlockState(sleepingPos).getBlock() instanceof BedBlock`），床上没真床方块立刻 `stopSleeping()`。
-- 修复：先 `setBlock` 放 FOOT+HEAD 两半真床，再 `startSleepInBed(foot)`；`TempBedTracker`（ConcurrentHashMap<UUID, 入口维度+两坐标>）在服务端 END_SERVER_TICK 里检查玩家醒来/下线就删床。
+**C2. 引用相等 vs 组件相等**
+以物品组件为存储的容器，用 `Inventory.contains` 之类做有效性判断会被"内容相同的另一个物品"顶替——有效性判断用**引用相等**逐槽扫描。
 
-### D2. "幽灵床"（客户端先显示放置又消失）
-- 根因：`ServerPlayer.startSleepInBed` 第一行 `getBlockState(pos).getValue(FACING)`，对空气调用直接异常，服务器报错但客户端已预测放置。
-- 修复：同 D1（床先落地），失败路径立即删床并向玩家发 `BedSleepingProblem` 原版文案。
+**C3. 容量上限静默丢数据**
+任何"写入有硬上限的存储"的功能，打开前必须检查容量（用 EntityBlock 探针或组件计数），超限拒绝并提示（en_us/zh_cn 双语），绝不能静默截断。
 
-### D3. 床被复制
-- 根因：删床用普通 setBlock 会掉落床物品，玩家手里还拿着床 → 一变二。
-- 修复：删床 flag 用 `3 | Block.UPDATE_SUPPRESS_DROPS`。
+### 测试
 
-### D4. 睡姿永远朝一个方向
-- 根因：放床只 `setValue(PART, ...)` 没设 `FACING`，默认朝北；玩家躺向由床的 FACING 决定。
-- 修复：`bed.setValue(BedBlock.FACING, player.getDirection())`，FOOT 在玩家脚下、HEAD 在视线前方一格；用 `state.hasProperty(BedBlock.FACING)` 兜底无原版属性的 modded 伪床。
-- 教训：**睡姿/朝向由方块状态决定，不是玩家实体朝向**；验收要用 E2E 对四个方向逐一断言方块状态。
+**D1. mineflayer 1.21.x 客户端解析崩溃**
+症状：`PartialReadError`（ArmorTrimMaterial 等），机器人状态错乱。根因：minecraft-data 的协议定义与服务器实际物品组件不同步。修复：架构上放弃客户端断言——机器人只做 join/look/点击，所有断言走 RCON；bot 协议钉具体版本号。服务器日志零异常 = 服侧无 bug 的必要条件。
 
-### D5. 隐藏行为：睡觉会设重生点
-- `startSleepInBed` 内部调 `setRespawnPosition`——临时床删掉后重生点指向空气。原版会回退世界出生点并提示，可接受；若产品不接受需在醒来时重置。
+**D2. RCON `run say` 探针永远"失败"**
+`execute if block ... run say MATCHED` 的 say 输出走聊天广播，**RCON 响应为空串**——无论条件真假，断言恒假。用裸 `execute if block <pos> <方块>[<状态>]`，响应是内联 `Test passed` / `Test failed`。
+经验：**先验证测试工具自身**——写任何方块断言前对已知方块（如超平坦 0 -64 0 的 bedrock）跑探针自检。
 
-## E. E2E 测试
+---
 
-### E1. mineflayer 1.21.x 客户端解析崩溃
-- 症状：`PartialReadError: ... ArmorTrimMaterial`，机器人状态错乱。
-- 根因：minecraft-data 的 1.21.x protocol 定义与服务器实际物品组件不同步。
-- 修复：**架构上放弃客户端断言**——mineflayer 只做 join/look/activateItem/activateBlock，所有断言走 RCON（`/data get entity`、`/execute if block`）；bot 协议钉 `version: '1.21.1'`。服务器日志零异常即服侧无 bug。
+## 第二部分：案例研究（特定 mod 的特有机制，方法可复用，结论不可复用）
 
-### E2. RCON `run say` 探针永远"失败"
-- 症状：`execute if block ... run say MATCHED` 通过 RCON 拿到的响应永远是空串，断言全挂（且**连真实成功也判负**）。
-- 根因：`say` 输出走聊天广播，不回传 RCON 通道。
-- 修复：用裸 `execute if block <pos> <方块>[状态]`，响应是内联的 `Test passed` / `Test failed`；布尔断言直接匹配这两个词。
-- 经验：**测试工具自身的可信度要先于被测代码验证**——先对已知方块（如 0 -64 0 的 bedrock）跑一轮探针自检。
+> 以下来自组织项目 handy-shulkers（手持潜影盒/手持床睡觉）的机制性 bug。这类问题只在"模拟原版方块行为"的功能里出现；读它的目的是学**排查套路**，不是背修复。
 
-### E3. 测试服搭建要点
-- `online-mode=false`（离线 bot 可进）、`enable-rcon=true` + 密码/端口、`level-type=minecraft\:flat`（坐标可预测）、`spawn-protection=0`、`difficulty` 测睡觉时切 peaceful 防怪物拦截、`eula=true`。
-- 多套服务器并行时 RCON 端口错开（25575/25576）。
+### 案例一：手持床原地睡觉（原版内部约束类 bug 的标准排查路径）
+
+症状链：右键床没反应 → 瞬间醒 → "幽灵床" → 删床复制物品 → 睡姿固定一个方向。五个症状、一条根因链：
+
+1. **没反应/幽灵床**：`ServerPlayer.startSleepInBed(pos)` 第一行无条件读 `getBlockState(pos).getValue(FACING)`，对空气调用直接抛异常——服务器报错，客户端已预测放置又回滚。
+2. **瞬间醒**：`LivingEntity.tick` 每 tick 调 `checkBedExists()`（睡姿位置必须是 `BedBlock`），没有真床方块立刻强制醒来。
+3. **复制物品**：清理临时方块用普通 `setBlock` 会掉落物品 → 一变二；用 `3 | Block.UPDATE_SUPPRESS_DROPS`。
+4. **睡姿固定**：睡姿由**床方块的 `FACING` 属性**决定，不是实体朝向——放床时只设 `PART` 没设 `FACING` 就永远一个方向。
+
+**方法论（可复用）**：功能"模仿原版行为"时，先反编译原版（loom-cache `*-sources.jar`）回答三个问题：① 入口方法有哪些无条件前置读取（崩在何处）？② 运行期每 tick 校验什么（何时回退）？③ 行为的实际数据载体是实体还是方块状态（改哪里才生效）？然后设计"满足前置 → 建临时物 → tick 级清理器防残留防复制"三件套。
+
+### 案例二：手持容器（组件存储类功能的数据安全链）
+
+一个"以物品组件为存储的打开-编辑-写回"功能，必须同时做到：引用相等的 stillValid、容量上限拒绝、禁嵌套写入、拦截"把容器放进自己"、每变更即时写回（防崩溃丢数据，宁多序列化不冒险延迟写）。任何一环缺失都是静默数据损坏，且玩家报告时数据已经丢了——这类功能验收标准是"所有破坏路径都试一遍"。
+
+### 案例三：同一逻辑 × 4 构建的回归面
+
+双版本 × 双加载器意味着每个行为修复要落四处、跑四轮。省力规则：core 逐字节相同 + diff 即差异清单 + 版本坐标集中在 `gradle.properties` + tags 可选引用吃掉大部分 mod 兼容工作。漏改一处的典型症状是"某个平台独有 bug"——先 diff 四个项目再查逻辑。
