@@ -51,6 +51,7 @@ RCON 大响应注意：首包 ≥4000 字节时要发空命令取结束标记排
 
 - ❌ `execute ... run say X`：say 输出走聊天广播，**RCON 响应为空串**，无论条件真假——所有这类断言恒假。
 - ❌ 任何依赖 mineflayer `bot.currentWindow`/客户端物品栏状态的断言：1.21.x PartialReadError 解析 desync，时好时坏。
+- ⚠️ 未加载区块上的 `execute if block`：新版本（1.21.9+ 出生区块默认不加载）会返回 "That position is not loaded" 或 "Test failed"——远距离探测前先 `/forceload add <x> <z>`（用完 remove）。
 
 **探针自检**：写任何方块断言前，先对已知方块验证探针本身（超平坦 0 -64 0 必是 bedrock）：
 
