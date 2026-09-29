@@ -8,7 +8,7 @@ Architecture:                     Generic / extensible
 
 Currently validated environments: （这是 reference 覆盖范围，不代表 Skill 的支持边界）
 - 已验证差异经验：Minecraft 1.21.1 ↔ 1.21.11 × Fabric / NeoForge（Mojmap，Java 21）
-- 版本卡（结构事实）：1.20.1 / 1.20.4 / 1.20.6 / 1.21 / 1.21.1 / 1.21.4 / 1.21.5 / 1.21.8 / 1.21.11
+- 版本卡（结构事实）：覆盖清单的唯一事实来源见 references/environments/versions/README.md
 ```
 
 ## 解决什么问题

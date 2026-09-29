@@ -41,7 +41,12 @@ unzip -p  <jar> net/minecraft/.../Foo.java     # 读单个类源码
 javap -cp <jar> net.minecraft...Foo            # 无 sources 时看签名
 ```
 
-跨映射查名：Linkie（linkie.shedaniel.dev）可在指定 MC 版本下互查 Mojmap / Yarn / official 等命名空间。
+缓存里没有 sources jar（fresh clone 首跑常见）就先生成：
+
+- Fabric Loom：`./gradlew genSources`，生成后回到上面的 `find` 定位。
+- ModDevGradle / ForgeGradle：先跑一次正常构建（NFRT / ForgeGradle 会产出反编译产物），再回到上面的 `find`；或用 IDE 打开项目让 IDE 拉取源码。
+
+跨映射查名：Linkie（linkie.shedaniel.dev）支持指定 MC 版本下 Mojmap / Yarn / official 及老版本 MCP / SRG 命名空间互查。
 
 ## 4. 常见"记忆陷阱"清单（跨版本 / 跨 Loader 高发）
 

@@ -2,7 +2,7 @@
 
 分两部分：
 
-- **第一部分：通用坑**——条目标注了适用范围（如 `[Fabric Loom]`、`[1.21.x]`）的只在该范围内成立；未标注范围为跨环境成立。涉及原版机制的类名为 Mojmap 写法，其他映射下名称不同、概念一致。
+- **第一部分：通用坑**——条目标注了适用范围（如 `[Fabric Loom]`、`[1.21.x]`）的只在该范围内成立；未标注范围为跨环境成立。标签图例：`[构建系统：X]`、`[X × Y]` 标注**环境范围**；`[领域·子域]` 标注条目主题。涉及原版机制与 Loader API 的类名 / 代码片段均以条目标注的映射 / Loader 写法为准，其他映射 / Loader 下名称不同、概念一致（动手前按目标项目核实）。
 - **第二部分：案例研究**——来自组织实战项目的特有机制 bug，**结论不可复用到别的 mod**；保留价值在于示范排查方法。
 
 ---
@@ -11,11 +11,14 @@
 
 ### 构建环境
 
-**A1. [构建系统：Fabric Loom × 1.21.x] Loom 1.18+ 报 "requires JVM 25"**
-升级 fabric-loom 后 Gradle 起不来。Loom 1.18 用 Java 25 FFM API 重写了 native 层，Gradle JVM 必须 25+。做 MC 1.21.x 目标时钉 `fabric-loom 1.17.21` + Gradle 9.5.1 + JDK 21（其他版本线不受此组合约束，但升级构建插件前先核对其 JVM 要求）。
+**A1. [构建系统：Fabric Loom] Loom 1.18+ 报 "requires JVM 25"**
+升级 fabric-loom 到 1.18+ 后 Gradle 起不来：Loom 1.18 改用 Java 25 的 FFM API 实现 native 层，Gradle JVM 必须 25+——**任何 MC 版本线都受此影响**，不只 1.21.x（来源：Loom 1.18 release notes）。
+
+**A1b. [Fabric Loom × 1.21.x 目标] 推荐钉版组合**
+做 MC 1.21.x 目标时钉 `fabric-loom 1.17.21` + Gradle 9.5.1 + JDK 21，不要顺手升级（组织实测组合）。
 
 **A2. [Gradle 通用] 全局 init 脚本 / 镜像弄坏插件解析**
-机器全局 `~/.gradle/init.gradle` 强制镜像（如阿里云）时，Loader 插件 / 依赖在镜像上可能不存在。修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
+机器全局 `~/.gradle/init.gradle` 强制镜像（如阿里云）时，Loader 插件 / 依赖在镜像上不存在就**必然解析失败**（组织实测：NeoForge 插件在阿里云镜像上解析失败）。修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
 
 **A3. [Gradle 通用] wrapper 首跑下载超时**
 隔离 GRADLE_USER_HOME 后 services.gradle.org 下载超时。修复：从 `~/.gradle/wrapper/dists/` 预拷对应发行包（如 `gradle-9.5.1-bin`）到隔离目录同名路径。
@@ -23,10 +26,13 @@
 **A4. [CI 通用] 两连坑**
 ① 推 `.github/workflows/` 需要 token 有 `workflow` scope（`gh auth refresh -h github.com -s workflow`），否则先放 `ci/` 目录；② upload-artifact v4 的 **artifact 名不允许 `/`**——matrix 里项目路径和 artifact 名用两条平行数组。
 
+**A5. [老版本线] 老 Forge 工具链组合约束**
+老 Forge（ForgeGradle 2/3 时代，1.12.2 及更早）对 Gradle / JDK / mappings 的组合有严格且过时的要求，不要凭记忆升级任何一环；以项目现状与对应年代官方文档为准。识别方法见 `environment-discovery.md` §1.3（MCP / SRG 信号）。
+
 ### 交互模型
 
 **B1. [通用] 客户端伪造成功会吞掉后续交互**
-客户端事件处理器返回"成功"（如 Fabric 回调返回 `SUCCESS`、NeoForge 客户端侧取消并给结果）会让客户端认为已完成、不再发 use 包到服务端，表现为"界面闪一下就关""功能时灵时不灵"。规则：客户端一律放行（Fabric 返回 `PASS`、NeoForge 不取消），所有真实动作在服务端做。
+客户端事件处理器返回"成功"（如 Fabric 回调返回 `SUCCESS`、NeoForge / Forge 客户端侧取消并给结果）会让客户端认为已完成、不再发 use 包到服务端，表现为"界面闪一下就关""功能时灵时不灵"。规则：客户端一律放行（Fabric 返回 `PASS`、NeoForge / Forge 不取消），所有真实动作在服务端做。（Forge 线无本组织已验证的 loader 级知识，事件分侧语义动手前按 api-verification 核实。）
 
 **B2. [通用·原版容器机制] 没有方块锚点的菜单闪关**
 从物品 / 远程打开任何菜单（便携工作台、随身容器类功能），原版 `stillValid(ContainerLevelAccess)` 每 tick 检查锚点方块类型，玩家脚下不是对应方块就立即关闭。子类覆写 `stillValid(p) { return p.isAlive(); }`。
@@ -38,7 +44,7 @@
 判定 fake player 用 `player.getClass() != ServerPlayer.class`（精确比较，防子类绕过），并给配置开关；别用 `instanceof`。
 
 **B5. [通用] 潜行语义组合**
-用 XOR 门表达"默认不潜行触发、潜行放置；配置反转"：`if (config.requireSneak != player.isShiftKeyDown()) return PASS;`——永不出现两种都触发 / 都不触发。
+用 XOR 门表达"默认不潜行触发、潜行放置；配置反转"：`if (config.requireSneak != player.isShiftKeyDown()) return PASS;`——永不出现两种都触发 / 都不触发。（`return PASS` 为 Fabric 回调写法；NeoForge / Forge 对应"不取消事件"。）
 
 ### 数据安全
 

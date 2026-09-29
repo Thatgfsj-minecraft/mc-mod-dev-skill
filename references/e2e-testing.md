@@ -2,7 +2,9 @@
 
 适用于任何有玩家交互行为的模组，**任何版本 / Loader**：机器人负责"像玩家一样操作"，服务端 RCON 负责"权威判定结果"。技术栈：node + mineflayer + minecraft-data + 零依赖手写 RCON 客户端。
 
-命令面（RCON、`/execute`、`/data`、`/item`、`/time`…）是原版能力，与 Loader 无关，断言模式跨环境复用；**服务器安装与启动方式随 Loader 而定**（见下）。
+命令面（RCON、`/execute`、`/data`、`/item`、`/time`…）是原版能力，与 Loader 无关，断言模式跨 Loader 复用；**服务器安装与启动方式随 Loader 而定**（见下）。
+
+**版本下界**：本文命令语法按 **1.13+** 书写（`/item` 系为 **1.17+**；1.13–1.16 用 `/replaceitem`，1.12 及更早是老式 `/execute <实体> <x> <y> <z>` 语法）。更老版本的命令面不同，动手前按目标版本核实命令语法。
 
 ## 架构分工
 

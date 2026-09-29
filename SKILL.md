@@ -72,10 +72,14 @@ Relevant Modules:    …
 Project Conventions: …
 ```
 
+（以上两张为**格式示例**，仅演示写法——数值一律以实际侦察为准，不要照抄。）
+
 规则：
 
 - **版本识别必须先于代码编写**。同一功能在不同版本 / Loader 下可能有不同的类名、方法签名、注册方式、事件与网络 API、`ResourceLocation`/`Identifier` 类 API、Server/Client 类型归属与数据组件机制。
-- 项目同时存在多个 Loader / 多个版本时，按任务目标识别**实际目标模块**并逐个处理；任务未指明时列出全部目标向用户确认，**不擅自替用户选一个**。
+- 项目同时存在多个 Loader / 多个版本时，按任务目标识别**实际目标模块**并逐个处理；任务未指明时列出全部目标向用户确认，**不擅自替用户选一个**；无法交互时逐个目标分别完成并分别验证，或选与任务最相关的目标并显式声明选择依据。
+- **新建项目（无现有代码可侦察）**：环境卡由任务规格 + 目标版本的版本卡（若有）填充；用户未指定的自由维度（映射体系、mod id、包名、架构模式）一次性列出请用户确认，或选默认并显式声明理由，不逐项停机（NeoForge / Forge 的映射事实上是 Mojmap；Fabric 的 Yarn 与 Mojmap 都常见，不确定时问一次）。
+- 环境卡输出到任务 / 会话记录并随上下文传递，**未经用户要求不写入用户仓库**；每行注明证据来源（见 `references/environment-discovery.md` §2）。
 - 关键信号冲突或无法判定时停下（§13），禁止默默采用默认假设。
 
 ## 4. Environment Identification
@@ -142,7 +146,7 @@ Project Conventions: …
 
   组织内验证过模式 4，实测细节见 `references/environments/loaders/fabric-vs-neoforge-1.21.x.md`。
 - **交互类功能**：服务端权威（§2.2）；接管右键前先给有自己界面的原版方块让路。
-- **模仿原版行为的功能**：先反编译原版确认它的前置校验和每 tick 校验（§7 第 4 条），再设计"满足前置 → 建临时物 → tick 级清理器"。
+- **模仿原版行为的功能**：先反编译原版确认它的前置校验和每 tick 校验（§7 第 4 条），再设计"满足前置 → 建临时物 → tick 级清理器"。适用于复刻原版方块 / 物品**完整行为链**的功能（如便携床、随身容器）；简单功能不要套用整套模式。
 - **数据安全**：写回型数据结构用引用相等判断有效性、打开前做容量上限检查、拒绝嵌套写入；临时方块 / 实体的清理要抑制掉落防复制。
 - **配置解析**：逐字段手写解析 + 显式默认值 + 越界归一化，不依赖 Gson 自动反序列化。
 - **mod 兼容 tags 用可选引用**：`{ "id": "#c:<类别>", "required": false }`——目标环境没有该标签也不报错；建议覆盖全部原版变体。
@@ -150,10 +154,10 @@ Project Conventions: …
 
 ## 9. Build Verification（构建与发布）
 
-- 用项目自己的构建入口（通常 `./gradlew build` 或等价任务）。首次构建先检查是否需要隔离 `GRADLE_USER_HOME`（镜像 init 脚本会弄坏插件解析，见 `references/pitfalls.md` A2/A3）。
+- 用项目自己的构建入口（通常 `./gradlew build` 或等价任务）。首次构建先检查是否需要隔离 `GRADLE_USER_HOME`——**关键**：全局镜像 init 脚本会直接弄坏 Loader 插件解析（实测必现，不是"可能"），见 `references/pitfalls.md` A2/A3。
 - 构建失败 = API 假设错误的信号：把每个错误按 §7 归类核实，不要凭感觉盲改。
 - 多构建项目：**每个目标构建都要编译通过**；版本号更新要落到项目实际存版本的所有位置（单项目一处，多构建项目按其布局逐处）。
-- 发布：全部目标构建产物 → 测试服部署 + E2E 全绿 → 打 tag → release notes 列变更与验证方式。CI 注意事项见 `references/pitfalls.md` A4。
+- 发布：统一升版本号 → 全部目标构建产物（Gradle 默认输出 `build/libs/<archivesName>-<version>.jar`）→ 测试服部署 + E2E 全绿 → 提交并打 tag（tag 风格 `vx.y.z`）→ `git push` 时**带 `--tags`**（否则 tag 不会上传）→ `gh release create vx.y.z --title … --notes … <全部目标构建的 jar 路径>`（release notes 列变更与验证方式）。CI 注意事项见 `references/pitfalls.md` A4。
 
 ## 10. Testing / E2E
 
@@ -183,9 +187,10 @@ Project Conventions: …
 
 - 默认可读（通用方法层）：本文件 + `references/environment-discovery.md` + `references/api-verification.md` + `references/pitfalls.md` 第一部分 + `references/e2e-testing.md`。
 - 环境知识层（`references/environments/`）：
-  - 版本：`versions/<mc版本>/README.md` 版本卡，当前覆盖 1.20.1 / 1.20.4 / 1.20.6 / 1.21 / 1.21.1 / 1.21.4 / 1.21.5 / 1.21.8 / 1.21.11；已验证版本对差异目前仅 `versions/1.21.1/vs-1.21.11-mojmap.md`。
-  - Loader：`loaders/fabric-vs-neoforge-1.21.x.md`（已验证）。
-  - 版本卡里未标注"已验证"的内容只是结构事实，不能当验证结论用。以上是**当前覆盖范围，不代表 Skill 只支持这些环境**，没有对应文件时按 §13 处理。
+  - 版本：`versions/<mc版本>/README.md` 版本卡 + `versions/<旧版本>/vs-<新版本>-<映射>.md` 已验证版本对差异。**覆盖清单的唯一事实来源是 `references/environments/versions/README.md` 的覆盖表**（新增版本不需要修改本文件）。
+  - Loader：`loaders/<loaderA>-vs-<loaderB>-<版本线>.md`。
+  - 版本卡里未标注"已验证"的内容只是结构事实，不能当验证结论用。覆盖范围**不代表支持边界**，没有对应文件时按 §13 处理；无文件夹的版本可读同发布线最近邻版本的版本卡（见 versions/README.md 的缺号对照）。
+  - **迁移目标落在两个已验证端点之间时**（如 1.21.1 → 1.21.8）：读取夹持的版本对差异文件作为候选清单，并逐条核实各条目在目标版本是否成立（差异文件内标注了各条目的适用边界）。
 - 完整加载规则与扩展约定见 `references/README.md`。
 
 ## 13. Failure Handling

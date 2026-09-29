@@ -16,7 +16,7 @@
 
 - 物品自定义数据用**任意 NBT**（数据组件 1.20.5 才引入）；以 NBT 为存储的物品功能按 NBT 模型实现。
 - `InteractionResult` 旧模型：`SUCCESS_SERVER` 拆分发生在 1.21.2+，本版本纯服务端动作仍用 `SUCCESS`。
-- 资源定位类为 `net.minecraft.resources.ResourceLocation`（改名发生在 1.21.1 → 1.21.11 之间）。
+- 资源定位类为 `net.minecraft.resources.ResourceLocation`（改名发生在 1.21.11，见 NeoForge 升级 primer）。
 
 ## 已验证经验
 
