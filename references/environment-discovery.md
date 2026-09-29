@@ -69,7 +69,7 @@ Minecraft Mod API 的跨版本 / 跨 Loader 差异巨大且点状分布：类名
 | `net.minecraft.item.ItemStack`、`net.minecraft.util.Identifier`（Yarn 包布局） | Yarn |
 | `func_12345_a` / `m_12345_` 形式的方法名 | SRG 中间名（映射未完成或老工具链） |
 
-识别出 MCP / SRG（老 Forge 时代项目）：大概率没有对应版本卡，直接走 `SKILL.md` §13 兜底；查名用 Linkie 的 MCP / SRG 命名空间（见 `api-verification.md` §3）；构建工具链组合约束见 `pitfalls.md` A5。
+识别出 MCP / SRG（老 Forge 时代项目）：先查 `environments/versions/` 是否有该版本的结构事实卡（1.7.10 / 1.8.9 / 1.12.2 等已有），没有再走 `SKILL.md` §13 兜底。查名用 Linkie 的 MCP / SRG 命名空间（见 `api-verification.md` §3）；构建工具链组合约束见 `pitfalls.md` A5。
 
 注意：Mojmap 自身也会在版本间改名（已验证：1.21.11 线把 `ResourceLocation` 改名 `Identifier`，但包仍在 `net.minecraft.resources`）——所以包路径比类名可靠。见 `environments/versions/1.21.1/vs-1.21.11-mojmap.md`。
 

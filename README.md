@@ -43,8 +43,8 @@ references/
   pitfalls.md                       踩坑手册（通用坑 + 案例研究）
   e2e-testing.md                    专用服务器 + 服务端权威断言的 E2E 体系
   environments/
-    versions/README.md              版本知识索引（覆盖表、版本卡模板、新增流程）
-    versions/1.20.1/ … 1.21.11/     各版本文件夹：README.md 版本卡；已验证差异放 <旧版本>/vs-*.md
+    versions/README.md              版本知识索引（覆盖表、缺号说明、版本卡模板、新增流程）
+    versions/1.7.10/ … 1.21.11/     各版本文件夹（传奇老线 + 现代线共 18 个版本）：README.md 版本卡；已验证差异放 <旧版本>/vs-*.md
     loaders/fabric-vs-neoforge-1.21.x.md   已验证：Fabric ↔ NeoForge 差异（1.21.x）
 ```
 
