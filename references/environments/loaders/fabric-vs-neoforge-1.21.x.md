@@ -46,6 +46,10 @@
 
 注意：fabric-api 版本号跨线不单调（1.21.9 线的 0.134.1 低于 1.21.8 线的 0.136.1 属正常，各线独立计数），取坐标时必须按 `+<mc>` 后缀过滤 maven-metadata。
 
+fabric-api / loader 坐标通用坑（[实测：1.16.4 探针]）：
+- fabric-api 的 group 是 **`net.fabricmc.fabric-api`**，写 `net.fabricmc:fabric-api` 会在依赖解析期 404（Gradle "Could not find" + POM 直连 404 双确认）。loader 的 group 才是 `net.fabricmc`。
+- 老线的 fabric-api 后缀是**大版本线**而非完整版本号：1.16.x 用 `+1.16`（如 `0.42.0+1.16`），没有 `+1.16.4` / `+1.16.5`。
+
 ## 配套实测架构：复制式四子项目 core
 
 组织内验证过的一种多版本 × 多 Loader 布局（对应 `SKILL.md` §8 模式 4，**不是通用推荐**，其他项目按自身架构走）：
