@@ -16,6 +16,16 @@
 
 **A1b. [Fabric Loom × 1.21.x 目标] 推荐钉版组合**
 做 MC 1.21.x 目标时钉 `fabric-loom 1.17.21` + Gradle 9.5.1 + JDK 21，不要顺手升级（组织实测组合）。
+**MC 26.x 目标**（去混淆化时代）换轨：`net.fabricmc.fabric-loom` **1.18.2**（新插件 id，删 mappings 行，`implementation` 代 `modImplementation`）+ Gradle ≥9.7 + **JDK 25** + ModDevGradle 2.0.147（无需升级）。详见 `environments/versions/1.21.11/vs-26.x-deobf.md` §1。
+
+**A8. [26.x] 去混淆化是工具链断层，不是普通 API 升级**
+[实测：26.1.2 / 26.2 / 26.3 三线] Mojang 自 26.x 停发混淆映射（version JSON 无 client/server_mappings），jar 本体即 mojang 名。症状链：Loom ≤1.17 报 "Failed to find official mojang mappings"（换 mappings 写法无用，必须换 Loom 1.18+ 与新插件 id）；升 Loom 后报 "Minecraft 26.x requires Java 25 but Gradle is using 21"（daemon/toolchain/服务器三者都要 25）；再报 plugin-api 9.7.0 解析失败（wrapper 升 ≥9.7）。**先过工具链断层再谈 API**，别在旧 Loom 上耗。
+
+**A9. [Gradle 通用] daemon 元数据残留已删除的 JDK → "supplied javaHome seems to be invalid"**
+[实测：26.x 移植期] 并行/先前构建用临时 JDK（后被删除）启动过 daemon 时，GRADLE_USER_HOME 的 daemon 注册表仍指向旧 javaHome，后续所有无关构建（含 1.21.x 旧工程）统一失败在 "Tried location: <已删路径>\bin\java.exe"。修复：`./gradlew --stop` 杀掉全部 daemon 即愈（daemon JVM 元数据不随 JDK 删除清理）。全工程同时挂同一错误时先查这个，别怀疑工程本身。
+
+**A10. [ModDevGradle × Gradle 9] 无本机 toolchain 时配置期崩（IBM_SEMERU）**
+[实测：26.3] 本机无可探测的 MC 要求版本 toolchain（如 JDK 25）时，MDG 2.0.147 走供应商下载路径引用 `JvmVendorSpec.IBM_SEMERU`，该枚举 Gradle 9 已删 → 配置期直接崩。修复：先装好 JDK 并让 JAVA_HOME/PATH 可被探测（foojay resolver 或自装），不触发下载路径即无碍。
 
 **A2. [Gradle 通用] 全局 init 脚本 / 镜像弄坏插件解析**
 机器全局 `~/.gradle/init.gradle` 强制镜像（如阿里云）时，Loader 插件 / 依赖在镜像上不存在就**必然解析失败**（组织实测：NeoForge 插件在阿里云镜像上解析失败）。修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
@@ -69,7 +79,7 @@
 ### 测试
 
 **D1. [测试·版本相关] mineflayer 客户端解析崩溃（1.21.x 实测）**
-症状：`PartialReadError`（ArmorTrimMaterial 等），机器人状态错乱。根因：minecraft-data 的协议定义与服务器实际物品组件不同步。修复：架构上放弃客户端断言——机器人只做 join / look / 点击，所有断言走 RCON；bot 协议钉具体版本号。服务器日志零异常 = 服侧无 bug 的必要条件。（该缺陷在 1.21.x 实测出现；"断言只走服务端"的架构原则跨环境成立。协议覆盖面：mineflayer 4.39.0 实测可进 1.21.4–1.21.10 服务器（协议 767–773）。）
+症状：`PartialReadError`（ArmorTrimMaterial 等），机器人状态错乱。根因：minecraft-data 的协议定义与服务器实际物品组件不同步。修复：架构上放弃客户端断言——机器人只做 join / look / 点击，所有断言走 RCON；bot 协议钉具体版本号。服务器日志零异常 = 服侧无 bug 的必要条件。（该缺陷在 1.21.x 实测出现；"断言只走服务端"的架构原则跨环境成立。协议覆盖面实测：mineflayer 4.39.0 支持 1.21.4–1.21.10（协议 767–773）与 **26.1**（775）；**26.2 / 26.3 缺协议定义**（认识版本号但 "No data available"/"unsupported protocol version"），bot 只能跳过，RCON 断言不受影响。）
 
 **D2. [测试·RCON 通用] RCON `run say` 探针永远"失败"**
 `execute if block ... run say MATCHED` 的 say 输出走聊天广播，**RCON 响应为空串**——无论条件真假，断言恒假。用裸 `execute if block <pos> <方块>[<状态>]`，响应是内联 `Test passed` / `Test failed`。
