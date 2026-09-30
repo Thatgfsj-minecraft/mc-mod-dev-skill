@@ -67,7 +67,7 @@
 |---|---|
 | `SavedData.Factory` + `computeIfAbsent(factory, id)` + 抽象 `save(CompoundTag, HolderLookup.Provider)` | `SavedDataType<T>`（id + supplier + Codec + DataFixTypes）+ `computeIfAbsent(savedDataType)`；基类不再有抽象 `save()`，`SavedData$Factory` 已不存在 |
 
-**[实测：javap + 编译实证，1.21.8 / 1.21.9 / 1.21.10 / 1.21.11]** `saveddata/SavedDataType.class` 在 1.21.8 / 1.21.9 / 1.21.10 均存在，且 `DimensionDataStorage.computeIfAbsent` 只剩 `SavedDataType` 重载；1.21.8 的 `SavedData` 基类只剩 `setDirty/isDirty`——1.21.1 式 load/save 模式在 1.21.8+ 无法实现，编译期即报错（`Factory` 找不到符号、`@Override save` 无方法可覆盖）。公开信息称 `SavedDataType` 自 1.21.6 引入（1.21.6 / 1.21.7 未逐点验证）。
+**[实测：javap + 编译实证，1.21.4 / 1.21.5 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11]** `saveddata/SavedDataType.class` 在 **1.21.5** 起即可用（record，4 参构造器 `(String, Supplier<T>, Codec<T>, DataFixTypes)` + `DimensionDataStorage.computeIfAbsent(SavedDataType<T>)`）；**1.21.4 无此类**（`SavedData$Factory` + 抽象 `save` 仍在，1.21.1 式可用）。**引入边界 = 1.21.5**（修正"公开资料称 1.21.6"的先验）。1.21.8 的 `SavedData` 基类只剩 `setDirty/isDirty`（1.21.5/1.21.9/1.21.10 的基类形态未单独 javap，但 Factory 式在 1.21.5 已无法使用）。
 **[实测：编译错误暴露，1.21.8]** `CompoundTag.getBoolean(String)` 在 1.21.8 返回 `Optional<Boolean>`（1.21.1 返回 `boolean`）——迁移布尔标记类代码时注意，候选清单此前未收录。
 
 ## 排查方法论

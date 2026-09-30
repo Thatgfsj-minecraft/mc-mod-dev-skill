@@ -11,7 +11,7 @@
 | Loader | NeoForge 21.4.x；Forge 54.x（公开版本线，非本组织验证）；Fabric；Quilt（跟进情况 `[未核实]`） |
 | 映射 | Mojmap、Yarn、Parchment 均可用 |
 | 构建系统 | ModDevGradle（NeoForge 侧）；Fabric Loom（Fabric / Quilt 侧，1.21.x 目标钉 1.17.21——Loom 1.18+ 要求 JVM 25，见 [pitfalls A1](../../../pitfalls.md)） |
-| 已验证依赖坐标 | `[实测]` Fabric：`com.mojang:minecraft:1.21.4` + `net.fabricmc:fabric-loader:0.19.5`（当时 meta 最新稳定版）+ Loom `1.17.21` + JDK 21，compileJava 通过（探针工程 skill-practice/1.21.4-fabric） |
+| 已验证依赖坐标 | `[实测]` Fabric：`com.mojang:minecraft:1.21.4` + `net.fabricmc:fabric-loader:0.19.5`（当时 meta 最新稳定版）+ Loom `1.17.21` + JDK 21，compileJava 通过（探针工程 skill-practice/1.21.4-fabric）；fabric-api `0.119.4+1.21.4`、NeoForge `21.4.158`（[实测：2026-09-30 skyislands 四构建全量编译 + Fabric 服务器冒烟 + bot E2E 全绿]） |
 
 ## 时代特征（影响实现的公开常识）
 
@@ -29,3 +29,4 @@
   - 证伪：`import net.minecraft.world.entity.ContainerUser;` → `错误: 找不到符号 / 符号: 类 ContainerUser / 位置: 程序包 net.minecraft.world.entity`——该类 1.21.4 不存在，与 1.21.8 一致（1.21.9 才引入）。
   - 证伪：`import net.minecraft.resources.Identifier;` → `错误: 找不到符号 / 符号: 类 Identifier / 位置: 程序包 net.minecraft.resources`——1.21.4 无 `Identifier`，改名发生在 1.21.11。
   - 结论：1.21.4 在本轮全部探针上与 1.21.8 **同模式**；差异对清单中 1.21.2–1.21.8 段的结论可直接外推到 1.21.4。
+- [实测：2026-09-30 skyislands 移植（四构建编译 + Fabric 专用服务器冒烟 + mineflayer bot E2E 全绿）] 本版本存储/出生点/地形/资源定位全部走 1.21.1 式：`SavedData.Factory` + `computeIfAbsent`（无 `SavedDataType`）、`ServerLevel.setDefaultSpawnPos`、noise_router 字段 `initial_density_without_jaggedness`、`ResourceLocation`——从 1.21.1 模板移植**零 Java 改动**，仅元数据版本范围不同。证据：mapped jar javap/unzip + `sky-islands-test/server-a2-1214` 冒烟记录。

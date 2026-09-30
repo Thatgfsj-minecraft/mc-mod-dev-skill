@@ -63,10 +63,13 @@
 **C3. [通用] 容量上限静默丢数据**
 任何"写入有硬上限的存储"的功能，打开前必须检查容量（用 EntityBlock 探针或组件计数），超限拒绝并提示（en_us / zh_cn 双语），绝不能静默截断。
 
+**C4. [数据包] `data/tags/...` 不是新 tag 路径，会让服务器拒启**
+[实测：1.21.5] 把 datapack 里的 tag 放到 `data/tags/worldgen/world_preset/normal.json`（少了命名空间段）时，`data/` 后第一段被解析为**命名空间 `tags`**，该文件被当成 `tags:normal` 这个 world_preset 的定义去解析（报 `No key dimensions`），注册表加载失败**直接拒绝开机**。tag 路径在任何 1.21.x 都必须是 `data/<命名空间>/tags/...`；错误信息的"world_preset"字样极具误导性，先查路径再查内容。
+
 ### 测试
 
 **D1. [测试·版本相关] mineflayer 客户端解析崩溃（1.21.x 实测）**
-症状：`PartialReadError`（ArmorTrimMaterial 等），机器人状态错乱。根因：minecraft-data 的协议定义与服务器实际物品组件不同步。修复：架构上放弃客户端断言——机器人只做 join / look / 点击，所有断言走 RCON；bot 协议钉具体版本号。服务器日志零异常 = 服侧无 bug 的必要条件。（该缺陷在 1.21.x 实测出现；"断言只走服务端"的架构原则跨环境成立。）
+症状：`PartialReadError`（ArmorTrimMaterial 等），机器人状态错乱。根因：minecraft-data 的协议定义与服务器实际物品组件不同步。修复：架构上放弃客户端断言——机器人只做 join / look / 点击，所有断言走 RCON；bot 协议钉具体版本号。服务器日志零异常 = 服侧无 bug 的必要条件。（该缺陷在 1.21.x 实测出现；"断言只走服务端"的架构原则跨环境成立。协议覆盖面：mineflayer 4.39.0 实测可进 1.21.4–1.21.10 服务器（协议 767–773）。）
 
 **D2. [测试·RCON 通用] RCON `run say` 探针永远"失败"**
 `execute if block ... run say MATCHED` 的 say 输出走聊天广播，**RCON 响应为空串**——无论条件真假，断言恒假。用裸 `execute if block <pos> <方块>[<状态>]`，响应是内联 `Test passed` / `Test failed`。
@@ -76,13 +79,16 @@
 [实测：1.21.8] `execute in <dim> run /execute if block ...`（run 后多了斜杠）返回 `Incorrect argument` 而非空串或报错——断言框架只认 "Test passed" 时表现为静默假 FAIL，曾一轮误判 8 个探针。规则：拼接嵌套命令时剥掉内部斜杠；**每条 RCON 响应原样落盘**，事后能归因"命令错"还是"行为错"。
 
 **D4. [测试·服务器进程] 重启判据用"进程退出"，不是"端口关闭"**
-`/stop` 后游戏端口先关，world 保存（尤其 forceload 过的下界/末地维度）可持续 2-3 分钟以上；老进程还持有 `session.lock` 时起新实例直接崩 `IOException: 另一个程序已锁定文件的一部分`。等进程消失（或后台任务完成信号）再重启。Git Bash 下查进程用 `tasklist //FI "PID eq N"`（单斜杠轮询不稳定）。
+`/stop` 后游戏端口先关，world 保存（尤其 forceload 过的下界/末地维度）可持续**数分钟**（实测带 forceload 的世界 5-7 分钟，但会正常完成）——耐心轮询进程退出，勿提前 taskkill；老进程还持有 `session.lock` 时起新实例直接崩 `IOException: 另一个程序已锁定文件的一部分`。Git Bash 下查进程用 `tasklist //FI "PID eq N"`（单斜杠轮询不稳定）。
 
 **D5. [测试·服务器进程] watchdog 强杀会留 0 字节 .mca，坏世界级联崩服**
 [实测：1.21.8] 看门狗强杀后 `r.0.1.mca` 等区域文件被创建但为空，之后任何触及该 region 的加载永久挂起，形成"坏世界级联崩服"，且与 mod 无关（栈里无 mod 帧）。规则：强杀过进程就**删掉该测试世界再跑下一轮**；注意下界存档在 `world/DIM-1/`，不在 `world/the_nether/`。
 
 **D6. [测试·机器人] bot 传送进未生成区块会锁死服务器 tick**
 [实测：1.21.8 三轮复现] 玩家移动包触发 `Entity.move → getFluidState → ServerChunkCache.getChunk → managedBlock`，而区块任务要靠 tick 推进 → 死锁 → watchdog 60s 崩服。mineflayer bot 远距离传送/下坠前，**先在控制台 `/forceload` 目标区块并探针确认已加载**。另：`forceload` 状态本身跨重启持久（world saved data），重启后别假设"本会话没 forceload 过"。
+
+**D7. [测试·虚空维度] 虚空下界里连控制台 forceload 都可能死锁**
+[实测：1.21.4 / 1.21.5 两轮复现，栈一致] 在自定义虚空 `noise_settings` 的下界里，`/forceload add <远区块>` 或 `tp @s <远坐标>` 本身就会触发 `ServerChunkCache.getChunk → managedBlock` 永久 park（60s 后 watchdog 崩服）——**D6 的"先 forceload 再传送"在虚空维度不成立，forceload 自己就是死锁源**（bot 在不在场都不救；tp 死锁时该 RCON 命令返回空串、后续命令仍被泵响应）。规则：命令驱动的区块操作只落在出生点附近已生成区块；"另一地点"类断言用 chunk 0,0 附近的坐标（如 2 70 2）替代几百格外远点。
 
 ---
 
