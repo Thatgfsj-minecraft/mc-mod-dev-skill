@@ -51,7 +51,9 @@ node e2e.js                                                    # 结束时自动
 
 RCON 大响应注意：首包 ≥4000 字节时要发空命令取结束标记排空。
 
-重启 / 关服注意（详见 pitfalls D4/D5/D6）：`/stop` 后等**进程退出**再重启（端口先关、world 保存可拖 2-3 分钟，`session.lock` 未释放就起新实例会崩）；watchdog 强杀过的世界先删档再用；bot 远距传送前先 forceload 目标区块。
+`pause-when-empty-seconds` 触发的空载暂停期间，RCON 与 forceload 仍可执行、断言不受暂停影响（[实测：1.21.8 移植批次]）。
+
+重启 / 关服注意（详见 pitfalls D4/D5/D6）：`/stop` 后等**进程退出**再重启（端口先关、world 保存可拖 2-3 分钟，`session.lock` 未释放就起新实例会崩）；watchdog 强杀过的世界先删档再用；bot 远距传送前先 forceload 目标区块（**虚空维度例外**：forceload 自身会死锁，见 pitfalls D7 与下方 ⚠️）。
 
 ## 断言模式（经过实战校正）
 

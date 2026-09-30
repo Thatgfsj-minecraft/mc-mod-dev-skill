@@ -45,6 +45,9 @@
 **A7. [自动化/子代理执行] 前台长命令会撞"无活动"看门狗**
 自动化环境里常有无活动看门狗（如 10 分钟无工具活动即终止执行者）。gradle 冷构建（NeoForge 首跑 NFRT 可 20 分钟+）和 MC 服务器进程绝不能前台裸跑：一律后台启动 + 输出重定向到日志文件 + 短轮询跟进。另外**后台命令里用绝对路径**——后台任务继承的工作目录可能与派发时不同，相对路径会静默打错目标（实测发生过"想建 A 仓库实际建了 B 仓库"，exit 0 无报错）。
 
+**A11. [测试环境] fabric server launcher 走 launchermeta.mojang.com 连不通**
+[实测：1.21.4 移植批次] 本机 piston-meta 可达但 launchermeta 不通时，fabric server launcher 首跑会卡在下载原版 server jar。修复：按 piston-meta 给出的 SHA1 预先下载原版 server jar，放 `versions/<mc>/server-<mc>.jar`，launcher 检测到即跳过下载。
+
 ### 交互模型
 
 **B1. [通用] 客户端伪造成功会吞掉后续交互**
