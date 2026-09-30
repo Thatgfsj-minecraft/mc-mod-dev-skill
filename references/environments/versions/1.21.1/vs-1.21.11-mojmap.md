@@ -30,7 +30,7 @@
 |---|---|
 | `startOpen(Player player)` / `stopOpen(Player player)` | `startOpen(ContainerUser user)` / `stopOpen(ContainerUser user)` |
 
-**1.21.9 引入** `ContainerUser` 抽象（容器可被非玩家实体打开；据 NeoForge 1.21.9 升级 primer——本仓库自身只验证了 1.21.1 = `Player`、1.21.11 = `ContainerUser` 两端）。需要拿实体时用 `user.getLivingEntity()`；自定义 `Container` 实现里播音效 / 做统计的代码要改签名，新增 import `net.minecraft.world.entity.ContainerUser` 与 `LivingEntity`。
+**1.21.9 引入** `ContainerUser` 抽象（容器可被非玩家实体打开；据 NeoForge 1.21.9 升级 primer——本仓库自身只验证了 1.21.1 = `Player`、1.21.11 = `ContainerUser` 两端；另实测 1.21.8 无此类、1.21.9 有（探针 skill-practice/1.21.8-fabric 与 1.21.9-fabric），引入边界 1.21.9 实测成立）。需要拿实体时用 `user.getLivingEntity()`；自定义 `Container` 实现里播音效 / 做统计的代码要改签名，新增 import `net.minecraft.world.entity.ContainerUser` 与 `LivingEntity`。
 
 ## 4. 访问器风格：getMessage → message
 
