@@ -51,6 +51,8 @@ node e2e.js                                                    # 结束时自动
 
 RCON 大响应注意：首包 ≥4000 字节时要发空命令取结束标记排空。
 
+重启 / 关服注意（详见 pitfalls D4/D5/D6）：`/stop` 后等**进程退出**再重启（端口先关、world 保存可拖 2-3 分钟，`session.lock` 未释放就起新实例会崩）；watchdog 强杀过的世界先删档再用；bot 远距传送前先 forceload 目标区块。
+
 ## 断言模式（经过实战校正）
 
 **可靠：**
@@ -63,8 +65,11 @@ RCON 大响应注意：首包 ≥4000 字节时要发空命令取结束标记排
 **不可靠（踩过坑）：**
 
 - ❌ `execute ... run say X`：say 输出走聊天广播，**RCON 响应为空串**，无论条件真假——所有这类断言恒假。
+- ❌ `execute in <dim> run /execute if block ...`（嵌套时 run 后多带斜杠）：返回 `Incorrect argument` 而非报错，表现为静默假 FAIL——拼接嵌套命令剥掉内部斜杠，每条响应原样落盘（详见 pitfalls D3）。
 - ❌ 任何依赖 mineflayer `bot.currentWindow` / 客户端物品栏状态的断言：客户端解析 desync，时好时坏（1.21.x 实测）。
 - ⚠️ 未加载区块上的 `execute if block`：新版本（实测 1.21.9+ 出生区块默认不加载）会返回 "That position is not loaded" 或 "Test failed"——远距离探测前先 `/forceload add <x> <z>`（用完 remove）。
+- ⚠️ `forceload` 状态跨重启持久（是 world saved data，重启日志可见 "Loading N persistent chunks"）：重启后 `forceload add` 可能返回 "No chunks were marked"——别按"本会话没 forceload 过"假设区块状态。
+- ⚠️ Windows + Git Bash 下 node 脚本 `require('/o/...')` 报 MODULE_NOT_FOUND：node 不认 Git Bash 路径，写盘符形式 `require('O:/...')`。
 
 **探针自检**：写任何方块断言前，先对已知方块验证探针本身（超平坦 0 -64 0 必是 bedrock）：
 

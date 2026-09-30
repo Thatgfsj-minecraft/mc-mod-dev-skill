@@ -69,11 +69,11 @@ versions/
 | 1.20.6 | [1.20.6/](1.20.6/README.md) | 暂无 |
 | 1.21 | [1.21/](1.21/README.md) | 暂无 |
 | 1.21.1 | [1.21.1/](1.21.1/README.md) | [vs-1.21.11（Mojmap）](1.21.1/vs-1.21.11-mojmap.md) |
-| 1.21.4 | [1.21.4/](1.21.4/README.md) | 暂无 |
+| 1.21.4 | [1.21.4/](1.21.4/README.md) | 卡内含编译探针 [实测]（SUCCESS_SERVER / ContainerUser 边界） |
 | 1.21.5 | [1.21.5/](1.21.5/README.md) | 暂无 |
-| 1.21.8 | [1.21.8/](1.21.8/README.md) | 暂无 |
-| 1.21.9 | [1.21.9/](1.21.9/README.md) | 暂无（spawn chunk 行为有本组织实测，见卡内） |
-| 1.21.10 | [1.21.10/](1.21.10/README.md) | 暂无 |
+| 1.21.8 | [1.21.8/](1.21.8/README.md) | 卡内含探针 + 移植 [实测]（SavedData=SavedDataType、setDefaultSpawnPos、旧 noise 字段；vs 文件 §2/§5/§6/§7） |
+| 1.21.9 | [1.21.9/](1.21.9/README.md) | 卡内含探针 + 移植 [实测]（spawn chunk 移除、ResourceLocation、SavedDataType、setRespawnData、preliminary_surface_level；NeoForge 21.9 线仅 beta，见卡内） |
+| 1.21.10 | [1.21.10/](1.21.10/README.md) | 卡内含移植 [实测]（与 1.21.9 同 API 面，四构建 + 行为测试） |
 | 1.21.11 | [1.21.11/](1.21.11/README.md) | 同 1.21.1（差异文件放在较旧版本侧，从 1.21.1 侧阅读） |
 
 > 上表"已验证差异经验"是**本组织恰好验证过的组合**，不代表社区最常见或推荐的迁移路径；其他版本对按加载规则走核实流程。覆盖范围只代表已沉淀知识的范围，不代表 Skill 支持边界。

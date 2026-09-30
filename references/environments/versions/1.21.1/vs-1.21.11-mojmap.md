@@ -23,6 +23,7 @@
 - 注意：包仍在 `net.minecraft.resources`——用包路径区分 Mojmap 的 `Identifier` 与 Yarn 的 `net.minecraft.util.Identifier`。
 
 适用边界：改名在 **1.21.11** 完成，**1.21.10 及之前仍为 `ResourceLocation`**（据 NeoForge 官方升级 primer：1.21.11 primer 专节记载改名，1.21.9 primer 仍通篇 `ResourceLocation`）。动手前可用 sources jar 一键核实。
+**[实测：mapped jar `unzip -l`，1.21.8 / 1.21.9 / 1.21.10 移植时核实]** 三版本的 mojmap jar 均只有 `resources/ResourceLocation.class`、无 `Identifier.class`（1.21.11 jar 只有 `Identifier.class`）——改名边界坐实在 1.21.10 → 1.21.11。
 
 ## 3. Container 开关回调：Player → ContainerUser
 
@@ -52,6 +53,22 @@
 - **两版本共同点**：`ServerPlayer.startSleepInBed(pos)` 会无条件读 `getBlockState(pos)` 的方块属性——对空气位置调用直接抛异常。任何"原地睡觉"类功能必须先让目标方块真实存在。
 
 适用边界：`bedWorks()` → 环境属性的替换见 NeoForge 1.21.11 primer；`isDay()` 移除、`serverLevel()` 收回、`startSleepInBed` 返回值变化的中间版本适用性未逐点验证。最后一条"两版本共同点"为两端实测，中间版本大概率同样成立但仍须核实。
+**[实测：javap，1.21.8 / 1.21.9 / 1.21.10 移植时核实]** 世界出生点 API 的切换边界在 **1.21.8 → 1.21.9**：1.21.8 仍只有 `ServerLevel.setDefaultSpawnPos(BlockPos, float)`（`MinecraftServer` 无 `setRespawnData`、无 `LevelData$RespawnData`）；1.21.9 / 1.21.10 均已有 `MinecraftServer.setRespawnData(LevelData.RespawnData.of(ResourceKey<Level>, BlockPos, float, float))`。
+
+## 6. noise_router 密度字段改名（数据包 JSON）
+
+自定义 `noise_settings` 的密度路由字段：**≤1.21.8 用 `initial_density_without_jaggedness`；1.21.9 起改名为 `preliminary_surface_level`**。字段用错时世界生成阶段直接解码失败（服务器日志报 codec 错误），启动冒烟即可裁决。
+
+**[实测：javap NoiseRouter record 组件 + class 常量池字符串，1.21.8 / 1.21.9 / 1.21.10 移植时核实；两端为此前四构建实测]** 1.21.8 组件为 `initialDensityWithoutJaggedness()`；1.21.9 / 1.21.10 为 `preliminarySurfaceLevel()`（常量池含 `preliminary_surface_level`、不含旧名）。1.21.2–1.21.7 未逐点验证，按邻卡 + 核实流程处理。
+
+## 7. SavedData 存储变体
+
+| 1.21.1 | 1.21.8+（实测点） |
+|---|---|
+| `SavedData.Factory` + `computeIfAbsent(factory, id)` + 抽象 `save(CompoundTag, HolderLookup.Provider)` | `SavedDataType<T>`（id + supplier + Codec + DataFixTypes）+ `computeIfAbsent(savedDataType)`；基类不再有抽象 `save()`，`SavedData$Factory` 已不存在 |
+
+**[实测：javap + 编译实证，1.21.8 / 1.21.9 / 1.21.10 / 1.21.11]** `saveddata/SavedDataType.class` 在 1.21.8 / 1.21.9 / 1.21.10 均存在，且 `DimensionDataStorage.computeIfAbsent` 只剩 `SavedDataType` 重载；1.21.8 的 `SavedData` 基类只剩 `setDirty/isDirty`——1.21.1 式 load/save 模式在 1.21.8+ 无法实现，编译期即报错（`Factory` 找不到符号、`@Override save` 无方法可覆盖）。公开信息称 `SavedDataType` 自 1.21.6 引入（1.21.6 / 1.21.7 未逐点验证）。
+**[实测：编译错误暴露，1.21.8]** `CompoundTag.getBoolean(String)` 在 1.21.8 返回 `Optional<Boolean>`（1.21.1 返回 `boolean`）——迁移布尔标记类代码时注意，候选清单此前未收录。
 
 ## 排查方法论
 

@@ -29,6 +29,12 @@
 **A5. [老版本线] 老 Forge 工具链组合约束**
 老 Forge（ForgeGradle 2/3 时代，1.12.2 及更早）对 Gradle / JDK / mappings 的组合有严格且过时的要求，不要凭记忆升级任何一环；以项目现状与对应年代官方文档为准。识别方法见 `environment-discovery.md` §1.3（MCP / SRG 信号）。
 
+**A6. [NeoForge] 某些版本线只有 beta（"取最新正式版"会扑空）**
+[实测：1.21.9 线] maven.neoforged.net/releases 上 21.9.x 全部是 `-beta`（至 21.9.16-beta），没有任何正式版；而 21.10 线正式版正常。选坐标时不要假设"每条线都有 stable"：先抓 `maven-metadata.xml` 全量列表，可疑时用 versions JSON API + 无后缀 pom 直探双源核实；确实只有 beta 时在依赖坐标里显式钉 beta 并注明。
+
+**A7. [自动化/子代理执行] 前台长命令会撞"无活动"看门狗**
+自动化环境里常有无活动看门狗（如 10 分钟无工具活动即终止执行者）。gradle 冷构建（NeoForge 首跑 NFRT 可 20 分钟+）和 MC 服务器进程绝不能前台裸跑：一律后台启动 + 输出重定向到日志文件 + 短轮询跟进。另外**后台命令里用绝对路径**——后台任务继承的工作目录可能与派发时不同，相对路径会静默打错目标（实测发生过"想建 A 仓库实际建了 B 仓库"，exit 0 无报错）。
+
 ### 交互模型
 
 **B1. [通用] 客户端伪造成功会吞掉后续交互**
@@ -65,6 +71,18 @@
 **D2. [测试·RCON 通用] RCON `run say` 探针永远"失败"**
 `execute if block ... run say MATCHED` 的 say 输出走聊天广播，**RCON 响应为空串**——无论条件真假，断言恒假。用裸 `execute if block <pos> <方块>[<状态>]`，响应是内联 `Test passed` / `Test failed`。
 经验：**先验证测试工具自身**——写任何方块断言前对已知方块（如超平坦 0 -64 0 的 bedrock）跑探针自检。
+
+**D3. [测试·RCON 通用] 嵌套 `execute` 多打一个斜杠 = 静默假 FAIL**
+[实测：1.21.8] `execute in <dim> run /execute if block ...`（run 后多了斜杠）返回 `Incorrect argument` 而非空串或报错——断言框架只认 "Test passed" 时表现为静默假 FAIL，曾一轮误判 8 个探针。规则：拼接嵌套命令时剥掉内部斜杠；**每条 RCON 响应原样落盘**，事后能归因"命令错"还是"行为错"。
+
+**D4. [测试·服务器进程] 重启判据用"进程退出"，不是"端口关闭"**
+`/stop` 后游戏端口先关，world 保存（尤其 forceload 过的下界/末地维度）可持续 2-3 分钟以上；老进程还持有 `session.lock` 时起新实例直接崩 `IOException: 另一个程序已锁定文件的一部分`。等进程消失（或后台任务完成信号）再重启。Git Bash 下查进程用 `tasklist //FI "PID eq N"`（单斜杠轮询不稳定）。
+
+**D5. [测试·服务器进程] watchdog 强杀会留 0 字节 .mca，坏世界级联崩服**
+[实测：1.21.8] 看门狗强杀后 `r.0.1.mca` 等区域文件被创建但为空，之后任何触及该 region 的加载永久挂起，形成"坏世界级联崩服"，且与 mod 无关（栈里无 mod 帧）。规则：强杀过进程就**删掉该测试世界再跑下一轮**；注意下界存档在 `world/DIM-1/`，不在 `world/the_nether/`。
+
+**D6. [测试·机器人] bot 传送进未生成区块会锁死服务器 tick**
+[实测：1.21.8 三轮复现] 玩家移动包触发 `Entity.move → getFluidState → ServerChunkCache.getChunk → managedBlock`，而区块任务要靠 tick 推进 → 死锁 → watchdog 60s 崩服。mineflayer bot 远距离传送/下坠前，**先在控制台 `/forceload` 目标区块并探针确认已加载**。另：`forceload` 状态本身跨重启持久（world saved data），重启后别假设"本会话没 forceload 过"。
 
 ---
 
