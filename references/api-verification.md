@@ -41,6 +41,8 @@ unzip -p  <jar> net/minecraft/.../Foo.java     # 读单个类源码
 javap -cp <jar> net.minecraft...Foo            # 无 sources 时看签名
 ```
 
+Loom 项目还有更快的查名手法：映射产物生成时会落 `mappings.tiny`（如 `GRADLE_USER_HOME/caches/fabric-loom/<mc>/loom.mappings.*/mappings.tiny`），直接 `grep` 类名 / 方法名 / record 组件即可，且带**完整方法描述符与组件序号**——比解包映射 jar 或 javap 更快更准（[实测：1.21.11] 用它复核出 `SavedDataType` 真实包路径与构造器签名）。
+
 缓存里没有 sources jar（fresh clone 首跑常见）就先生成：
 
 - Fabric Loom：`./gradlew genSources`，生成后回到上面的 `find` 定位。
