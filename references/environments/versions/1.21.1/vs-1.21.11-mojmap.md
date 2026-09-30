@@ -13,7 +13,7 @@
 
 1.21.2+ 把"纯服务端动作"（开菜单、睡觉等不需要客户端播动画的结果）拆出 `SUCCESS_SERVER`。**这个差异编译器抓不到**：用旧写法能编译通过，但客户端会按"客户端成功"处理，产生界面异常关闭、手臂不摆动等行为 bug——必须靠行为测试发现。
 
-适用边界：`SUCCESS_SERVER` 自 **1.21.2+** 存在，对 1.21.2–1.21.11 的所有中间版本成立。
+适用边界：`SUCCESS_SERVER` 自 **1.21.2+** 存在，对 1.21.2–1.21.11 的所有中间版本成立（1.21.4 / 1.21.8 / 1.21.9 均已探针实测成立）。
 
 ## 2. 资源定位类改名
 
@@ -30,7 +30,7 @@
 |---|---|
 | `startOpen(Player player)` / `stopOpen(Player player)` | `startOpen(ContainerUser user)` / `stopOpen(ContainerUser user)` |
 
-**1.21.9 引入** `ContainerUser` 抽象（容器可被非玩家实体打开；据 NeoForge 1.21.9 升级 primer——本仓库自身只验证了 1.21.1 = `Player`、1.21.11 = `ContainerUser` 两端；另实测 1.21.8 无此类、1.21.9 有（探针 skill-practice/1.21.8-fabric 与 1.21.9-fabric），引入边界 1.21.9 实测成立）。需要拿实体时用 `user.getLivingEntity()`；自定义 `Container` 实现里播音效 / 做统计的代码要改签名，新增 import `net.minecraft.world.entity.ContainerUser` 与 `LivingEntity`。
+**1.21.9 引入** `ContainerUser` 抽象（容器可被非玩家实体打开；据 NeoForge 1.21.9 升级 primer——本仓库自身只验证了 1.21.1 = `Player`、1.21.11 = `ContainerUser` 两端；另实测 1.21.4 / 1.21.8 均无此类、1.21.9 有（探针 skill-practice/1.21.4-fabric、1.21.8-fabric 与 1.21.9-fabric），引入边界 1.21.9 实测成立）。需要拿实体时用 `user.getLivingEntity()`；自定义 `Container` 实现里播音效 / 做统计的代码要改签名，新增 import `net.minecraft.world.entity.ContainerUser` 与 `LivingEntity`。
 
 ## 4. 访问器风格：getMessage → message
 
