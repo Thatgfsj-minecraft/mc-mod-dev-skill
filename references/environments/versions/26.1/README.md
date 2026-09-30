@@ -16,7 +16,7 @@
 
 ## 时代特征（影响实现的公开常识）
 
-- [实测] 工具链断层与核心 API 变更：见 [vs-26.x-deobf §1/§2](../../1.21.11/vs-26.x-deobf.md)（SavedDataType 首参 Identifier、事件改名 ServerEntityLevelChangeEvents）。
+- [实测] 工具链断层与核心 API 变更：见 [vs-26.x-deobf §1/§2](../1.21.11/vs-26.x-deobf.md)（SavedDataType 首参 Identifier、事件改名 ServerEntityLevelChangeEvents）。
 - [实测] noise_router / world_preset 数据包格式与 1.21.11 一致（`preliminary_surface_level` 仍有效）。
 
 ## 已验证经验

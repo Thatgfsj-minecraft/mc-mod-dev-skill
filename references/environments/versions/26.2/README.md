@@ -16,7 +16,7 @@
 
 ## 时代特征（影响实现的公开常识）
 
-- [实测] 与 26.1 同 API 面：工具链断层见 [vs-26.x-deobf §1](../../1.21.11/vs-26.x-deobf.md)，SavedDataType id=Identifier、事件改名、`setRespawnData` 不变均成立。
+- [实测] 与 26.1 同 API 面：工具链断层见 [vs-26.x-deobf §1](../1.21.11/vs-26.x-deobf.md)，SavedDataType id=Identifier、事件改名、`setRespawnData` 不变均成立。
 - [实测] **noise_router 仍是 `preliminary_surface_level`**（`chunk_surface_level` 改名发生在 26.3）——26.1/26.2/1.21.11 同键，worldgen JSON 无需改。
 
 ## 已验证经验

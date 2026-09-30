@@ -16,7 +16,7 @@
 
 ## 时代特征（影响实现的公开常识）
 
-- [实测] **worldgen 数据包大改（重写级，26.3 独有）**：`preliminary_surface_level`→**`chunk_surface_level`**、NoiseRouter 15→8 参、`surface_rule`→**`material_rule`**、`aquifers_enabled`→**`aquifers`**（Optional 对象缺省关）、`ore_veins_enabled` 删除、`NoiseSettings` 缩为 `(minY,height)`（size_horizontal/size_vertical 删除）、**BlockState JSON 改纯字符串**或 `{id, properties}`（不再收 `{"Name":...}`，报错判别词 `No key id in MapLike`）——详见 [vs-26.x-deobf §3](../../1.21.11/vs-26.x-deobf.md)。
+- [实测] **worldgen 数据包大改（重写级，26.3 独有）**：`preliminary_surface_level`→**`chunk_surface_level`**、NoiseRouter 15→8 参、`surface_rule`→**`material_rule`**、`aquifers_enabled`→**`aquifers`**（Optional 对象缺省关）、`ore_veins_enabled` 删除、`NoiseSettings` 缩为 `(minY,height)`（size_horizontal/size_vertical 删除）、**BlockState JSON 改纯字符串**或 `{id, properties}`（不再收 `{"Name":...}`，报错判别词 `No key id in MapLike`）——详见 [vs-26.x-deobf §3](../1.21.11/vs-26.x-deobf.md)。
 - [实测] `DimensionDataStorage` 改名 **`SavedDataStorage`**（26.3 起）；SavedDataType 首参 Identifier、Fabric 事件改名同 26.1/26.2。
 
 ## 已验证经验
