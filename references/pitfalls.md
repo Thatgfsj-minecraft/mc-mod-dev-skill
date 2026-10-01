@@ -27,6 +27,13 @@
 **A10. [ModDevGradle × Gradle 9] 无本机 toolchain 时配置期崩（IBM_SEMERU）**
 [实测：26.3] 本机无可探测的 MC 要求版本 toolchain（如 JDK 25）时，MDG 2.0.147 走供应商下载路径引用 `JvmVendorSpec.IBM_SEMERU`，该枚举 Gradle 9 已删 → 配置期直接崩。修复：先装好 JDK 并让 JAVA_HOME/PATH 可被探测（foojay resolver 或自装），不触发下载路径即无碍。
 
+**A11. [老版本线] 1.7.10/1.12.2 移植杂坑集**
+[实测：2026-10-01 skyislands 老线移植]
+- **WorldType 名上限 16 字符**：`skyislands_classic`（18 字符）直接崩——命名前先确认上限（1.12.2/1.7.10 都是）。
+- **老 Gradle（2.x/4.x）不继承系统代理**：直连 maven.minecraftforge.net 读超时；需要代理时必须显式 `-Dhttps.proxyHost/-Dhttps.proxyPort`（老 FG 的仓库重排 + `--offline` 见各版本卡）。
+- **1.7.10 universal jar 不带 bootstrap**：手铺 vanilla server.jar（piston sha1 校验）+ launchwrapper-1.12 + asm-all-5.0.3 + jopt-simple-4.5 + lzma-0.0.1，主类 `cpw.mods.fml.relauncher.ServerLaunchWrapper`。
+- **改了源码必须重建**：老线 jar 无 CI 兜底，"上代崩后只改了 A 侧、B 侧 jar 还是旧的"这类陈旧产物事故真实发生过（启动即崩，排查先对 jar 内 class 与源码的时间戳）。
+
 **A2. [Gradle 通用] 全局 init 脚本 / 镜像弄坏插件解析**
 机器全局 `~/.gradle/init.gradle` 强制镜像（如阿里云）时，Loader 插件 / 依赖在镜像上不存在就**必然解析失败**（组织实测：NeoForge 插件在阿里云镜像上解析失败）。修复：`GRADLE_USER_HOME=/干净目录 ./gradlew build`（目录里不能有 init.gradle）。
 
@@ -64,6 +71,9 @@
 
 **B5. [通用] 潜行语义组合**
 用 XOR 门表达"默认不潜行触发、潜行放置；配置反转"：`if (config.requireSneak != player.isShiftKeyDown()) return PASS;`——永不出现两种都触发 / 都不触发。（`return PASS` 为 Fabric 回调写法；NeoForge / Forge 对应"不取消事件"。）
+
+**B6. [通用·事件总线] EventBus 世代差异：Class 令牌注册在 1.7.10 静默零监听器**
+[实测：1.7.10 字节码确认] 1.12.2 的 `EventBus.register(Object)` 有 `target.getClass()==Class.class` 静态分支（注册静态 @SubscribeEvent 方法）；**1.7.10 没有**——传 Class 令牌会扫描 `java.lang.Class` 自身方法，静默注册零监听器，且实例方法即使扫到也无法调用。症状：编译全绿、启动无错、事件处理器永远不执行（"功能整体失效"类 bug）。规则：1.7.10 一律注册**实例**（单例 `public static final X INSTANCE = new X();` + `register(INSTANCE)`）；跨老版本写事件注册前先反编译当世代 EventBus 确认分支。
 
 ### 数据安全
 
@@ -113,6 +123,9 @@
 - **superflat 测试世界需显式 `generator-settings={"layers":[...]}`**：空 `{}` 在 1.21.4+ 报 "No key layers"。
 - **mineflayer 26.1 菜单伪影**：bot 在场时服务端菜单 0.5–3s 内被关（stillValid 全 true、客户端无 close_container 包）——菜单槽探针在 26.1 不可用，以服务端自证（SELF-TEST/逐 tick 打点）替代，勿误判为模组缺陷（D1 同类）。
 - **Corretto 25 on Windows 偶发 JIT 崩溃**（`EXCEPTION_ACCESS_VIOLATION`，vanilla chunk 序列化帧无 mod 帧）：加 `-XX:TieredStopAtLevel=1` 规避；崩后删档（D5）。
+
+**D9. [测试·老版本] pre-1.8 服务器没有方块探针命令**
+[实测：1.7.10/1.12.2] RCON 可用，但 `/testforblock` 1.8+ 才有、`/execute if block` 1.13+ 才有——1.7.10 无任何方块断言命令。替代：**解析存档 region 文件**（自研 Anvil/NBT 解析器，服务器写盘即服务器权威证据；注意 1.7.10 NBT 用数字物品 id：熔岩桶=327、冰=79）；1.12.2 有 `testforblock` 可用。bot 方面 mineflayer 最低支持 1.8.8——1.7.10 无 bot 路线，玩家相关行为只能"代码审查 + 存档证据"或如实标注未验证。1.12.2 无头服务器下界维度无玩家不加载——下界类断言在无 FML 客户端时天然受限，如实标注。
 
 ---
 
