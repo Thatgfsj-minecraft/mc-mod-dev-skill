@@ -11,7 +11,7 @@
 |---|---|---|
 | 入口声明 | `public class X implements ModInitializer` + `onInitialize()` | `@Mod(MOD_ID)` 类 + 构造函数 |
 | 右键方块 | `UseBlockCallback.EVENT.register((player, level, hand, hit) -> InteractionResult)`；不处理返回 `InteractionResult.PASS` | `@SubscribeEvent static void onRightClickBlock(PlayerInteractEvent.RightClickBlock e)`；不处理直接 return；**处理了才** `e.setCanceled(true); e.setCancellationResult(result);` |
-| 右键物品 | `UseItemCallback.EVENT.register`，返回 `InteractionResultHolder<ItemStack>`（1.21.1）；**1.21.11 改为返回 `InteractionResult`**（Fabric API 自己改了签名） | `@SubscribeEvent PlayerInteractEvent.RightClickItem` |
+| 右键物品 | `UseItemCallback.EVENT.register`，返回 `InteractionResultHolder<ItemStack>`（1.21.1）；**1.21.4 起改为返回 `InteractionResult`**（Fabric API 自己改了签名；[实测：handyshulkers 1.21.4–1.21.10 移植，五版 fabric-events-interaction-v0 javap 均为新式]） | `@SubscribeEvent PlayerInteractEvent.RightClickItem` |
 | 服务端每 tick | `ServerTickEvents.END_SERVER_TICK.register(Foo::tick)` | `NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> Foo.tick(e.getServer()))` |
 | 配置目录 | `FabricLoader.getInstance().getConfigDir().resolve("modid.json")` | `FMLPaths.CONFIGDIR.get().resolve("modid.json")` |
 | 事件总线 | 每个 `XxxCallback.EVENT` 静态注册 | `NeoForge.EVENT_BUS.register(Class)` 类级 + `@SubscribeEvent` 方法级 |
@@ -30,7 +30,7 @@
 ## 语义差异提醒
 
 - NeoForge 取消事件必须同时 `setCancellationResult`，否则两侧玩家侧交互结果不一致。
-- Fabric 回调签名在小版本间会变（UseItemCallback 返回类型 1.21.1→1.21.11 变更），NeoForge 事件 API 跨这两个版本稳定——**迁移版本时优先编译 NeoForge 侧确认 core 无恙，再处理 Fabric 侧签名**。
+- Fabric 回调签名在小版本间会变（UseItemCallback 返回类型 1.21.4 起变更，[实测] 边界早于此前记载的 1.21.11），NeoForge 事件 API 跨版本稳定——**迁移版本时优先编译 NeoForge 侧确认 core 无恙，再处理 Fabric 侧签名**。
 - 测试服安装器装出的 fabric-loader 版本可能比构建期依赖新（如 0.19.5 vs 0.19.3），属正常，依赖范围声明写宽松些（`>=0.16.0`）。
 
 ## 已验证版本坐标（1.21.x 全线）

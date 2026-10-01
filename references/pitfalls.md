@@ -103,6 +103,17 @@
 **D7. [测试·虚空维度] 虚空下界里连控制台 forceload 都可能死锁**
 [实测：1.21.4 / 1.21.5 两轮复现，栈一致] 在自定义虚空 `noise_settings` 的下界里，`/forceload add <远区块>` 或 `tp @s <远坐标>` 本身就会触发 `ServerChunkCache.getChunk → managedBlock` 永久 park（60s 后 watchdog 崩服）——**D6 的"先 forceload 再传送"在虚空维度不成立，forceload 自己就是死锁源**（bot 在不在场都不救；tp 死锁时该 RCON 命令返回空串、后续命令仍被泵响应）。规则：命令驱动的区块操作只落在出生点附近已生成区块；"另一地点"类断言用 chunk 0,0 附近的坐标（如 2 70 2）替代几百格外远点。
 
+**D8. [测试·E2E] 探针/断言跨版本不可移植清单（1.21.x–26.x 实测）**
+- **"物品探针法"（container.N 塞探针物品）在 1.21.4 不可用**：`/item replace entity <玩家> container.N` 在 1.21.4 寻址玩家背包（0-8=快捷栏），1.21.11 才寻址打开的菜单——替代：断言用服务端下发的窗口类型+格数+无 windowClose，写路径用 bot 真实点击后 RCON NBT 验证。
+- **数据组件语法 1.21.4**：`container=[{slot:0,item:{...}}]` 必须显式 `slot`（1.21.5+ 可省略；26.2 的 `/item replace` 同样要求 slot）。
+- **mineflayer 窗口类型串**按前缀断言：附魔=`minecraft:enchantment`、锻造=`minecraft:smithing`、潜影盒菜单/末影箱=`minecraft:generic_9xN`——勿用方块名。
+- **`/give` 紧跟 `/item replace weapon.mainhand` 会吞掉给的物品**（give 落所选槽被 replace 覆盖）：先持械再 give。
+- **多版本轮换测试服的 RCON 端口互锁**：关机时游戏端口先释放、RCON 端口保持到进程退出——下一实例能绑游戏端口但 RCON 初始化失败（日志 "Unable to initialise RCON"），随后命令打到**还在关机的上一世界**产生"世界冻住"假象。起服前等两个端口都空闲 + Done 后检查无 RCON bind 失败 + 只跟踪自己的 PID。
+- **Windows 中文 locale 服务器日志是 GBK**：grep 视为 binary 静默失配——一律 `grep -a`。
+- **superflat 测试世界需显式 `generator-settings={"layers":[...]}`**：空 `{}` 在 1.21.4+ 报 "No key layers"。
+- **mineflayer 26.1 菜单伪影**：bot 在场时服务端菜单 0.5–3s 内被关（stillValid 全 true、客户端无 close_container 包）——菜单槽探针在 26.1 不可用，以服务端自证（SELF-TEST/逐 tick 打点）替代，勿误判为模组缺陷（D1 同类）。
+- **Corretto 25 on Windows 偶发 JIT 崩溃**（`EXCEPTION_ACCESS_VIOLATION`，vanilla chunk 序列化帧无 mod 帧）：加 `-XX:TieredStopAtLevel=1` 规避；崩后删档（D5）。
+
 ---
 
 ## 第二部分：案例研究（特定 mod 的特有机制，方法可复用，结论不可复用）

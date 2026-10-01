@@ -48,7 +48,7 @@
   bedRule.asProblem()       // 不能睡时的 BedSleepingProblem
   ```
 - 1.21.11 移除 `ServerLevel.isDay()`（改用时间 / 维度属性重算）。
-- 1.21.11 `player.serverLevel()` 收回：`ServerPlayer.level()` 协变特化为 `ServerLevel`，直接用 `player.level()`。
+- ~~1.21.11 `player.serverLevel()` 收回~~ **[实测修正：handyshulkers 1.21.4–1.21.10 移植，javap]** `ServerPlayer.serverLevel()` → 协变 `level()` 的真实边界是 **1.21.5 → 1.21.8**：1.21.4/1.21.5 有 `serverLevel()` 无协变 `level()`；1.21.8/1.21.9/1.21.10 相反（1.21.11 同）。
 - `startSleepInBed` 返回值不再是 `Either<BedSleepingProblem, Unit>`，用 `var` 接。
 - **两版本共同点**：`ServerPlayer.startSleepInBed(pos)` 会无条件读 `getBlockState(pos)` 的方块属性——对空气位置调用直接抛异常。任何"原地睡觉"类功能必须先让目标方块真实存在。
 
