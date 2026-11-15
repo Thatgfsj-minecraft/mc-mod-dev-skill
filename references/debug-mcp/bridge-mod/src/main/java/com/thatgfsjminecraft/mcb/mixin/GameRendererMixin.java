@@ -20,7 +20,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(GameRenderer.class)
 public abstract class GameRendererMixin {
 
-    @Inject(method = "getFov(Lnet/minecraft/client/Camera;FZ)F", at = @At("TAIL"))
+    // cancellable is REQUIRED: the TAIL injection calls cir.setReturnValue(...) when the
+    // fov override is active, and without this flag Mixin throws CancellationException on
+    // the render thread ("The call method_3196 is not cancellable") - crashed the client
+    // the moment persistent camera mode pinned the fov (crash-2026-11-15_16.35.20).
+    @Inject(method = "getFov(Lnet/minecraft/client/Camera;FZ)F", at = @At("TAIL"), cancellable = true)
     private void mcb$fovOverride(Camera camera, float partialTick, boolean useFovSetting,
                                  CallbackInfoReturnable<Float> cir) {
         if (McbCamera.hasFovOverride()) {
