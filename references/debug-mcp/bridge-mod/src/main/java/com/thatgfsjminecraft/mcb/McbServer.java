@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -495,6 +496,29 @@ final class McbServer {
                     data.addProperty("mode", "none");
                     sendOk(id, data);
                 }
+                case "camera.look" -> hop(id, () -> {
+                    // §3.14: authoritative "what does the sky-eye camera see?".
+                    // Jade builds its ray from the PLAYER's eye position, so it
+                    // cannot follow the virtual camera — this op answers the same
+                    // question directly against the client level.
+                    ClientLevel level = McbHandlers.requireLevel();
+                    double[] pos = vec3Double(params);
+                    float yaw;
+                    float pitch;
+                    if (params.has("lookAt") && params.get("lookAt").isJsonArray()) {
+                        double[] target = vec3Double(params.get("lookAt"), "lookAt");
+                        float[] angles = anglesTowards(
+                                pos[0], pos[1], pos[2], target[0], target[1], target[2]);
+                        yaw = angles[0];
+                        pitch = angles[1];
+                    } else {
+                        yaw = floatOf(params.get("yaw"), "yaw");
+                        pitch = floatOf(params.get("pitch"), "pitch");
+                    }
+                    double reach = params.has("reach") && params.get("reach").isJsonPrimitive()
+                            ? doubleOf(params.get("reach"), "reach") : 64.0;
+                    return McbHandlers.cameraLook(pos[0], pos[1], pos[2], yaw, pitch, reach, level);
+                });
                 case "player.move" -> {
                     // §3.13 teleport with hardcoded ground safety: probe the
                     // ground under the target, place glass into the void if
@@ -636,6 +660,36 @@ final class McbServer {
             double y = doubleOf(params.get("y"), "y");
             double z = doubleOf(params.get("z"), "z");
             return new double[] { x, y, z };
+        }
+
+        /** [x,y,z] array form (used by camera.look's lookAt parameter). */
+        private static double[] vec3Double(JsonElement el, String name) {
+            if (el == null || !el.isJsonArray() || el.getAsJsonArray().size() != 3) {
+                throw new OpException("BAD_PARAMS", name + " must be [x,y,z]");
+            }
+            var a = el.getAsJsonArray();
+            return new double[] {
+                    doubleOf(a.get(0), name + ".x"),
+                    doubleOf(a.get(1), name + ".y"),
+                    doubleOf(a.get(2), name + ".z"),
+            };
+        }
+
+        /**
+         * Yaw/pitch (Minecraft convention: yaw 0 = south/+Z, 90 = west/-X;
+         * pitch -90 = straight up) that points from (fx,fy,fz) at (tx,ty,tz).
+         */
+        private static float[] anglesTowards(double fx, double fy, double fz,
+                                             double tx, double ty, double tz) {
+            double dx = tx - fx;
+            double dy = ty - fy;
+            double dz = tz - fz;
+            double horizontal = Math.sqrt(dx * dx + dz * dz);
+            // yaw: atan2(-dx, dz) -> 0 for +Z (south), 90 for -X (west)
+            double yaw = Math.toDegrees(Math.atan2(-dx, dz));
+            // pitch: -90 straight up, +90 straight down
+            double pitch = -Math.toDegrees(Math.atan2(dy, horizontal));
+            return new float[] { (float) yaw, (float) pitch };
         }
 
         private static double doubleOf(JsonElement el, String name) {

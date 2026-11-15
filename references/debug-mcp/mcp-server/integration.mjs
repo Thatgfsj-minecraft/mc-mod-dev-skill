@@ -77,6 +77,30 @@ const server = net.createServer((socket) => {
         case "camera.clear":
           reply({ active: false, mode: "none" });
           break;
+        case "camera.look": {
+          // Strict param shape: flat numeric x/y/z plus either flat yaw/pitch
+          // or a lookAt [x,y,z] array (protocol §3.14).
+          const q = req.params;
+          if (![q.x, q.y, q.z].every((v) => typeof v === "number")) {
+            fail("BAD_PARAMS", "fake bridge requires flat numeric x/y/z (protocol §3.14)");
+            break;
+          }
+          const hasLookAt = Array.isArray(q.lookAt) && q.lookAt.length === 3
+            && q.lookAt.every((v) => typeof v === "number");
+          if (!hasLookAt && ![q.yaw, q.pitch].every((v) => typeof v === "number")) {
+            fail("BAD_PARAMS", "fake bridge requires yaw/pitch or lookAt (protocol §3.14)");
+            break;
+          }
+          reply({
+            originX: q.x, originY: q.y, originZ: q.z,
+            yaw: hasLookAt ? 45 : q.yaw, pitch: hasLookAt ? -30 : q.pitch,
+            reach: q.reach ?? 64,
+            hit: true, hitType: "BLOCK", distance: 3.5,
+            x: 12, y: 61, z: 8, id: "fabricaeexnihilo:porcelain_crucible",
+            properties: {}, hasBlockEntity: true,
+          });
+          break;
+        }
         case "player.move": {
           // Strict param shape: flat numeric x/y/z, optional yaw/pitch (§3.13).
           const q = req.params;
@@ -224,6 +248,25 @@ if (moveData.placedGlass !== true || moveData.placedGlassVerified !== true) {
   throw new Error(`mc_move_player ground-safety fields missing: ${moved.result.content[0].text.slice(0, 200)}`);
 }
 console.log("mc_move_player ok:", JSON.stringify(moveData));
+
+// 7. mc_camera_look: yaw/pitch form AND lookAt form both reach the bridge.
+send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: {
+  name: "mc_camera_look", arguments: { x: 13.5, y: 62.5, z: 9.5, yaw: 135, pitch: 35 } } });
+const look1 = await wait(9);
+const look1Data = JSON.parse(look1.result.content[0].text);
+if (look1.result.isError === true || look1Data.hit !== true || look1Data.id !== "fabricaeexnihilo:porcelain_crucible") {
+  throw new Error(`mc_camera_look failed: ${look1.result.content[0].text.slice(0, 200)}`);
+}
+console.log("mc_camera_look (yaw/pitch) ok:", look1Data.id);
+
+send({ jsonrpc: "2.0", id: 10, method: "tools/call", params: {
+  name: "mc_camera_look", arguments: { x: 13.5, y: 62.5, z: 9.5, lookAt: [12, 61, 8] } } });
+const look2 = await wait(10);
+const look2Data = JSON.parse(look2.result.content[0].text);
+if (look2.result.isError === true || look2Data.yaw !== 45 || look2Data.pitch !== -30) {
+  throw new Error(`mc_camera_look lookAt form failed: ${look2.result.content[0].text.slice(0, 200)}`);
+}
+console.log("mc_camera_look (lookAt) ok: yaw=" + look2Data.yaw + " pitch=" + look2Data.pitch);
 
 proc.removeAllListeners("exit");
 proc.kill();

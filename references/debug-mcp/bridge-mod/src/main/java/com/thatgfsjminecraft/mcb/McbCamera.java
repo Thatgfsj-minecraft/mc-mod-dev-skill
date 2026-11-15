@@ -50,8 +50,12 @@ public final class McbCamera {
      * so screenshots are clean, but keep information overlays from mods
      * (Jade tooltip, minihud...) — they render through their own hooks and
      * are NOT affected by GuiMixin. Restored when the camera op ends.
+     *
+     * DERIVED from `active` on purpose: a separate flag can drift out of sync
+     * with the camera override (that drift was a real bug — the one-shot
+     * cleared the HUD flag before the pixels were read, so camera.eye shipped
+     * a frame with the HUD still visible). One source of truth, one state.
      */
-    private static volatile boolean uiSuppressed = false;
 
     /** One-shot pipeline: set at request time, cleared at capture time. */
     private static final AtomicBoolean captureQueued = new AtomicBoolean(false);
@@ -68,7 +72,13 @@ public final class McbCamera {
     public static float camPitch() { return pitch; }
     public static boolean hasFovOverride() { return fov > 0f; }
     public static float fovOverride() { return fov; }
-    public static boolean uiSuppressed() { return uiSuppressed; }
+
+    /**
+     * UI suppression is ON exactly while a camera override is active — derived,
+     * never stored separately. `active` is cleared only AFTER the pixels have
+     * been read (see capture()), so the captured frame really is HUD-free.
+     */
+    public static boolean uiSuppressed() { return active; }
 
     /**
      * Called from CameraMixin on the render thread after the camera pose has
@@ -96,7 +106,6 @@ public final class McbCamera {
         captureQueued.set(false);
         active = true;   // persistent stays whatever it was; one-shot wins per-frame
         persistent = false;
-        uiSuppressed = true;
     }
 
     static void setPersistent(double px, double py, double pz, float pYaw, float pPitch, Float pFov) {
@@ -105,7 +114,6 @@ public final class McbCamera {
         fov = pFov == null ? -1f : Math.min(Math.max(pFov, 1f), 360f);
         active = true;
         persistent = true;
-        uiSuppressed = true;
     }
 
     /**
@@ -123,7 +131,6 @@ public final class McbCamera {
         active = false;
         persistent = false;
         fov = -1f;
-        uiSuppressed = false;
     }
 
     /** status.cameraMode — additive field, never null. */
@@ -148,25 +155,28 @@ public final class McbCamera {
         Consumer<String> err = pendingErr;
         pendingOk = null;
         pendingErr = null;
-        // Restore vanilla camera behaviour BEFORE responding so the very next
-        // frame is already the player's view. If camera.set was issued while
-        // this one-shot was pending, persistent mode owns the camera now —
-        // leave active/fov alone.
-        if (!persistent) {
-            active = false;
-            fov = -1f;
-            uiSuppressed = false;
-        }
-        if (ok == null || err == null) return;
         JsonObject extra = new JsonObject();
         extra.add("pose", poseJson());
         extra.add("chunks", chunksJson());
         // Reuse the verified GL read path. It hops once more via execute(),
         // which still runs BEFORE the next frame overwrites the framebuffer.
+        //
+        // IMPORTANT (ordering bug fixed): the camera override must stay active
+        // until the pixels have actually been read, otherwise the captured frame
+        // is rendered with the HUD back and the "sky-eye" shot ships clutter.
+        // So `active` is cleared inside the ok callback (after the read), not
+        // here. If camera.set was issued while this one-shot was pending,
+        // persistent mode owns the camera now — leave active/fov alone.
         McbScreenshot.take(
                 img -> {
                     for (java.util.Map.Entry<String, com.google.gson.JsonElement> e : extra.entrySet()) {
                         img.add(e.getKey(), e.getValue());
+                    }
+                    if (!persistent) {
+                        // Pixels are in hand — restore vanilla camera behaviour so
+                        // the next frame is already the player's view.
+                        active = false;
+                        fov = -1f;
                     }
                     ok.accept(img);
                 },

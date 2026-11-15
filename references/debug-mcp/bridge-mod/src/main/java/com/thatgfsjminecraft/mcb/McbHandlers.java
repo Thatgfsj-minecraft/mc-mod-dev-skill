@@ -20,6 +20,10 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.ClipContext;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -189,6 +193,69 @@ final class McbHandlers {
                 beJson.addProperty("nbtError", e.toString());
             }
             o.add("blockEntity", beJson);
+        }
+        return o;
+    }
+
+    // =====================================================================
+    // §3.14 camera.look — what is the sky-eye camera looking at?
+    // =====================================================================
+    /**
+     * Ray-cast from a virtual camera pose and report the block it hits.
+     *
+     * WHY THIS EXISTS: Jade/WTHIT build their tooltip ray from the PLAYER's
+     * eye position (verified in Jade 21.1.1 bytecode: RayTracing starts at
+     * `player.getEyePosition()` and only uses the camera for the distance
+     * basis). So a sky-eye shot can never make Jade point at the virtual
+     * camera's target. This op gives the AI the same answer authoritatively:
+     * "the camera at (x,y,z) looking (yaw,pitch) sees block B".
+     *
+     * The ray runs against the client level, which is the same block data the
+     * rendered frame is built from — so the answer matches the picture.
+     */
+    static JsonObject cameraLook(double x, double y, double z, float yaw, float pitch,
+                                 double reach, ClientLevel level) {
+        Vec3 origin = new Vec3(x, y, z);
+        // Minecraft yaw: 0 = south (+Z), 90 = west (-X); pitch: -90 = up.
+        double yawRad = Math.toRadians(yaw);
+        double pitchRad = Math.toRadians(pitch);
+        double cosPitch = Math.cos(pitchRad);
+        Vec3 dir = new Vec3(
+                -Math.sin(yawRad) * cosPitch,
+                -Math.sin(pitchRad),
+                Math.cos(yawRad) * cosPitch);
+        Vec3 end = origin.add(dir.scale(reach));
+
+        JsonObject o = new JsonObject();
+        o.addProperty("originX", x);
+        o.addProperty("originY", y);
+        o.addProperty("originZ", z);
+        o.addProperty("yaw", yaw);
+        o.addProperty("pitch", pitch);
+        o.addProperty("reach", reach);
+        o.addProperty("directionX", dir.x);
+        o.addProperty("directionY", dir.y);
+        o.addProperty("directionZ", dir.z);
+
+        BlockHitResult hit = level.clip(new ClipContext(
+                origin, end,
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                Minecraft.getInstance().player));
+        if (hit == null || hit.getType() == HitResult.Type.MISS) {
+            o.addProperty("hit", false);
+            o.addProperty("hitType", "MISS");
+            return o;
+        }
+        o.addProperty("hit", true);
+        o.addProperty("hitType", hit.getType().name());
+        BlockPos pos = hit.getBlockPos();
+        o.addProperty("distance", origin.distanceTo(hit.getLocation()));
+        // Reuse §3.3 block.get for the block id / properties / block-entity NBT
+        // so the answer shape is identical to a plain block lookup.
+        JsonObject block = blockGet(pos.getX(), pos.getY(), pos.getZ(), level);
+        for (var e : block.entrySet()) {
+            o.add(e.getKey(), e.getValue());
         }
         return o;
     }

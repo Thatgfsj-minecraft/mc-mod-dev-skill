@@ -241,7 +241,7 @@ export function registerTools(server: McpServer): void {
     "mc_camera_eye",
     {
       title: "Sky-eye one-shot screenshot",
-      description: "Render ONE frame from an arbitrary virtual camera (position + yaw/pitch + optional fov) WITHOUT teleporting the player, capture it as PNG and restore the player view. Vanilla HUD (hotbar/hearts/chat/crosshair...) is auto-hidden during the shot for a clean image, but mod info overlays (Jade tooltip, minihud...) STAY — the Jade tooltip follows the virtual camera. Returns pose + chunks info: chunks.centerLoaded=false or low chunks.loadedNearby means the camera is outside loaded chunks — run mc_command 'forceload add <cx> <cz>' around that spot first, then shoot again.",
+      description: "Render ONE frame from an arbitrary virtual camera (position + yaw/pitch + optional fov) WITHOUT teleporting the player, capture it as PNG and restore the player view. Vanilla HUD (hotbar/hearts/chat/crosshair...) is auto-hidden during the shot for a clean image. Mod info overlays (minihud, Xaero waypoints...) stay visible. NOTE: the Jade tooltip does NOT follow this camera (Jade raycasts from the player's eye) — use mc_camera_look to identify the block the camera is pointing at. Returns pose + chunks info: chunks.centerLoaded=false or low chunks.loadedNearby means the camera is outside loaded chunks — run mc_command 'forceload add <cx> <cz>' around that spot first, then shoot again.",
       inputSchema: {
         x: z.number().describe("camera eye X (double, e.g. 24.5)"),
         y: z.number().describe("camera eye Y"),
@@ -280,7 +280,7 @@ export function registerTools(server: McpServer): void {
     "mc_camera_set",
     {
       title: "Enter persistent free camera",
-      description: "Lock the render camera to a virtual pose PERSISTENTLY (every frame until mc_camera_clear). The player stays where they are. Vanilla HUD clutter is auto-hidden while the free camera is active, but mod info overlays (Jade tooltip, minihud...) STAY and follow the camera — ideal for inspecting blocks with Jade from any angle via mc_screenshot. Restore the player view with mc_camera_clear when done.",
+      description: "Lock the render camera to a virtual pose PERSISTENTLY (every frame until mc_camera_clear). The player stays where they are. Vanilla HUD clutter is auto-hidden while the free camera is active; mod info overlays (minihud, Xaero waypoints...) stay visible. Take further shots with mc_screenshot. NOTE: the Jade tooltip does NOT follow this camera (Jade raycasts from the player's eye) — use mc_camera_look to identify what the camera is pointing at. Restore the player view with mc_camera_clear when done.",
       inputSchema: {
         x: z.number().describe("camera eye X"),
         y: z.number().describe("camera eye Y"),
@@ -296,6 +296,33 @@ export function registerTools(server: McpServer): void {
       };
       if (args.fov !== undefined) params.fov = args.fov;
       return bridge.request("camera.set", params);
+    }),
+  );
+
+  server.registerTool(
+    "mc_camera_look",
+    {
+      title: "What does the sky-eye camera see?",
+      description: "Ray-cast from a virtual camera pose and report the block it hits (id, properties, block-entity NBT, distance). Use this together with mc_camera_eye / mc_camera_set: Jade-style tooltips build their ray from the PLAYER's eye position, so they can NOT follow the virtual camera — this tool answers 'what am I looking at' authoritatively, and works at any distance. Give yaw+pitch, or give lookAt:[x,y,z] to aim at a target point. Much cheaper than a screenshot when you only need to identify a block.",
+      inputSchema: {
+        x: z.number().describe("camera eye X (double)"),
+        y: z.number().describe("camera eye Y"),
+        z: z.number().describe("camera eye Z"),
+        yaw: z.number().optional().describe("yaw in degrees, 0=south(+Z), 90=west(-X); omit if lookAt is given"),
+        pitch: z.number().optional().describe("pitch in degrees, -90=up, 90=down; omit if lookAt is given"),
+        lookAt: z.array(z.number()).optional().describe("[x,y,z] target point to aim at (replaces yaw/pitch)"),
+        reach: z.number().optional().describe("max ray length in blocks (default 64)"),
+      },
+    },
+    wrap(async (args: any) => {
+      const params: Record<string, any> = { x: args.x, y: args.y, z: args.z };
+      if (args.lookAt !== undefined) params.lookAt = args.lookAt;
+      else {
+        params.yaw = args.yaw ?? 0;
+        params.pitch = args.pitch ?? 0;
+      }
+      if (args.reach !== undefined) params.reach = args.reach;
+      return bridge.request("camera.look", params);
     }),
   );
 

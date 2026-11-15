@@ -258,8 +258,11 @@
 退出自由相机，恢复角色视角；同时取消未完成的 `camera.eye`（见上）。
 
 - `status`（§3.2）新增可选字段 `cameraMode`：`"none" | "one-shot" | "persistent"`。
-- **UI 抑制（硬编码行为）**：相机 op 生效期间，桥接端屏蔽**原版 HUD 杂项**（物品栏/血量饥饿/经验、状态效果、聊天+动作栏、Tab 列表、计分板侧栏、Boss 条、字幕、准星、demo/sleep 覆盖层），截图干净；**mod 信息覆盖层（Jade 信息栏、minihud 等）不受影响、照常渲染并跟随虚拟相机**——这是天眼的核心价值。屏幕效果（vignette/传送门等）保留，属于世界观感。相机 op 结束（抓帧完成 / `camera.clear`）自动恢复。
+- **UI 抑制（硬编码行为）**：相机 op 生效期间，桥接端屏蔽**原版 HUD 杂项**（物品栏/血量饥饿/经验、状态效果、聊天+动作栏、Tab 列表、计分板侧栏、Boss 条、字幕、准星、demo/sleep 覆盖层），截图干净；**mod 信息覆盖层（minihud、Xaero 路经点等）不受影响、照常渲染**。屏幕效果（vignette/传送门等）保留，属于世界观感。相机 op 结束（抓帧完成 / `camera.clear`）自动恢复。
+  - 时序要求：相机覆盖必须在**像素读取完成之后**才撤销，否则抓到的是 HUD 已恢复的帧（一次性 `camera.eye` 曾因此带上物品栏）。
+- **Jade/WTHIT 信息栏不会跟随虚拟相机**（实测 + Jade 21.1.1 字节码验证）：Jade 的射线起点固定是 `player.getEyePosition()`，`perspectiveMode: CAMERA` 只把距离基准换成相机，不改起点。需要"镜头在看哪个方块"时用 §3.14 `camera.look`。
 - 实现要点：姿态覆盖与 FOV 覆盖**必须在渲染线程**完成（Fabric 参考实现走 Mixin：`Camera.setup` TAIL + `GameRenderer.getFov` TAIL）；抓帧复用 §3.11 的像素读取路径，在两帧之间读取仍持有虚拟相机画面的帧缓冲。
+  - Mixin 注入若要改返回值，**必须写 `cancellable = true`**，否则 `cir.setReturnValue` 会抛 `CancellationException` 炸掉渲染线程（`GameRenderer.getFov` 曾因此崩溃）。
 
 ### 3.13 `player.move`（带地面安全的传送，v1 后向兼容扩展）
 
@@ -290,6 +293,37 @@
 - `placedGlassVerified`：玻璃已确认放置（集成服务端路径 true）。多人世界无集成服务端时降级为发送 `setblock` 命令（需要 OP，无法确认结果，`placedGlassVerified: false`）。
 - 无集成服务端也无连接 → `INTERNAL`；无世界/玩家 → `WORLD_NOT_LOADED`。
 - 世界未加载时玻璃探测读到的都是空气，会按"虚空"处理——集成服务端 setBlock 会强制加载区块，行为安全。
+
+### 3.14 `camera.look`（天眼看向哪个方块，v1 后向兼容扩展）
+
+动机：Jade/WTHIT 的信息栏**不会跟随虚拟相机**（实测 + Jade 21.1.1 字节码：射线起点固定是 `player.getEyePosition()`）。但 AI 需要"镜头正对着哪个方块、它是什么状态"——比截图便宜得多，也不受区块外的渲染限制。
+
+参数：`x`,`y`,`z`（**双精度**，相机眼位）；二选一：
+
+- `yaw` + `pitch`（浮点，同 §3.12 角度约定），或
+- `lookAt`：`[x,y,z]` 目标点数组，桥接端自行换算 yaw/pitch。
+
+可选 `reach`（双精度，最大射线长度，默认 64）。
+
+响应 data：
+
+```json
+{
+  "originX": 13.5, "originY": 62.5, "originZ": 9.5,
+  "yaw": 135.0, "pitch": 35.0, "reach": 64.0,
+  "directionX": -0.62, "directionY": -0.57, "directionZ": 0.54,
+  "hit": true, "hitType": "BLOCK", "distance": 2.83,
+  "x": 12, "y": 61, "z": 8,
+  "id": "fabricaeexnihilo:porcelain_crucible",
+  "properties": {}, "hasBlockEntity": true,
+  "blockEntity": {"type": "...", "nbt": "{...}"}
+}
+```
+
+- 命中方块的字段（`x`/`y`/`z`/`id`/`properties`/`blockEntity`）与 §3.3 `block.get` **完全一致**，可直接复用解析逻辑。
+- `hit: false` 表示射线上没有任何方块（`hitType: "MISS"`）。
+- 射线在**客户端世界**上计算，与渲染帧用的方块数据同源，因此结论与画面一致。
+- 与 `camera.eye`/`camera.set` 配合使用：先用 `camera.look` 确认目标，再用 `camera.eye` 拍图。
 
 ## 4. 版本化
 
