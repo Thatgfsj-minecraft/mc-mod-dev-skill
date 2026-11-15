@@ -143,7 +143,7 @@ export function registerTools(server: McpServer): void {
       title: "Read game logs (incremental)",
       description: "Read game log lines after a cursor id. First call: omit afterId. Later calls: pass the nextId returned before. overflowed=true means some earlier lines were evicted (a gap you cannot recover). NOTE: log ids are per-game-session — after the game restarts (reconnect), start over with afterId=0.",
       inputSchema: {
-        afterId: z.number().int().describe("return entries with id > afterId (0 = from buffer start)"),
+        afterId: z.number().int().optional().describe("return entries with id > afterId; omit on the first call (default 0 = from buffer start)"),
         limit: z.number().int().optional().describe("max entries (default 500, max 1000)"),
         levelMin: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).optional(),
       },
@@ -196,13 +196,13 @@ export function registerTools(server: McpServer): void {
     "mc_screenshot",
     {
       title: "Take a screenshot",
-      description: "Capture the game window as a JPEG image so you can visually inspect the game (multimodal).",
+      description: "Capture the game window as a PNG image so you can visually inspect the game (multimodal).",
       inputSchema: {},
     },
     async () => {
       try {
         const data: any = await bridge.request("screenshot.take", {}, 15000);
-        // Protocol §3.11: bridge decides the format (v1 reference = jpeg).
+        // Protocol §3.11: the bridge declares the format; v1 reference emits PNG.
         const mime = data.format === "png" ? "image/png" : "image/jpeg";
         return {
           content: [
