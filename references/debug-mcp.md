@@ -44,7 +44,7 @@ AI agent（你）
 
 1. **先 `mc_status` 再动手**——世界没加载时多数 op 会回 `WORLD_NOT_LOADED`，先建/进世界。
 2. **等日志用 `mc_wait_log`，不要盲轮询**——长轮询是协议一等公民，轮询既慢又可能撞游标缺口。
-3. **游标纪律**——`mc_logs` 的 `afterId` 自己持有；看到 `overflowed: true` 说明有缺口，回 `afterId=0` 重看或直接查崩溃报告。
+3. **游标纪律**——`mc_logs` 的 `afterId` 自己持有；游标只在同一次游戏会话内有意义：**游戏重启（收到新 hello）后游标归零，从 `afterId=0` 重看**。看到 `overflowed: true` 说明有缺口（协议 §3.7 有精确定义），回 `afterId=0` 重看或直接查崩溃报告。
 4. **空间感知三段式**——`mc_map`（看布局）→ `mc_scan`（定位关键方块）→ `mc_block_get`（精查状态/NBT）。直接对大区域硬扫是浪费上下文。
 5. **命令失败要读回执**——`mc_command` 返回 `resultText`（命令反馈原文），setblock 打错坐标、give 配错 id 都会在这里显形，不要假设成功。
 6. **修改场景用一次性世界**——命令是四级权限，`kill @e` / 大范围 fill 都执行得出去；在专用测试存档里玩（与 e2e-testing.md 的世界纪律一致）。

@@ -10,7 +10,26 @@
  */
 import net from "node:net";
 
-export const MCB_PORT = Number(process.env.MCB_PORT ?? 25585);
+export class BridgeError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+  }
+}
+
+const DEFAULT_PORT = 25585;
+/** NDJSON framing limit: a line longer than this is a protocol violation. */
+const MAX_LINE_BYTES = 1024 * 1024;
+
+export function mcbPort(): number {
+  const raw = process.env.MCB_PORT;
+  if (raw === undefined || raw === "") return DEFAULT_PORT;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new BridgeError("BAD_CONFIG", `MCB_PORT="${raw}" is not a valid port (1-65535)`);
+  }
+  return n;
+}
+
 export const MCB_HOST = process.env.MCB_HOST ?? "127.0.0.1";
 
 export interface Hello {
@@ -25,12 +44,6 @@ export interface BridgeResponse {
   ok: boolean;
   data?: any;
   error?: { code: string; message: string };
-}
-
-export class BridgeError extends Error {
-  constructor(public code: string, message: string) {
-    super(message);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -77,45 +90,73 @@ export class Bridge {
   }
 
   private open(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const socket = net.connect(MCB_PORT, MCB_HOST, () => {
-        /* hello arrives as first line */
-      });
+    this.buffer = ""; // never mix a stale partial line from a previous connection
+    const port = mcbPort();
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settleOk = () => {
+        if (!settled) { settled = true; clearTimeout(timeout); resolve(); }
+      };
+      const settleErr = (e: Error) => {
+        if (!settled) { settled = true; clearTimeout(timeout); reject(e); }
+      };
+
+      const socket = net.connect(port, MCB_HOST);
       socket.setEncoding("utf8");
+      this.socket = socket; // P0 fix: without this, every request writes to null
       this.hello = null;
 
       const timeout = setTimeout(() => {
         socket.destroy();
-        this.socket = null;
-        reject(new BridgeError(
+        this.teardown();
+        settleErr(new BridgeError(
           "BRIDGE_UNREACHABLE",
-          `no MCB bridge listening on ${MCB_HOST}:${MCB_PORT} — is the game running with the debug bridge mod installed?`
+          `no MCB bridge listening on ${MCB_HOST}:${port} — is the game running with the debug bridge mod installed?`
         ));
       }, 3000);
 
       socket.on("data", (chunk: string) => {
         this.buffer += chunk;
+        if (this.buffer.length > MAX_LINE_BYTES) {
+          // NDJSON framing broken (no newline in >1MB) — not a recoverable state.
+          this.teardown();
+          settleErr(new BridgeError(
+            "PROTOCOL_MISMATCH",
+            "bridge sent >1MB without a newline — NDJSON framing violation, disconnecting"
+          ));
+          return;
+        }
         let idx: number;
         while ((idx = this.buffer.indexOf("\n")) >= 0) {
           const line = this.buffer.slice(0, idx).trim();
           this.buffer = this.buffer.slice(idx + 1);
-          if (line) this.handleLine(line, resolve, timeout);
+          if (line) this.handleLine(line, settleOk, settleErr);
         }
       });
 
       socket.on("error", (err: Error) => {
-        clearTimeout(timeout);
         this.teardown();
-        reject(new BridgeError("BRIDGE_UNREACHABLE", err.message));
+        settleErr(new BridgeError("BRIDGE_UNREACHABLE", err.message));
       });
 
       socket.on("close", () => {
         this.teardown();
+        // Closed before hello arrived → connection died during handshake.
+        // (No-op if already settled by hello or a earlier error.)
+        settleErr(new BridgeError(
+          "BRIDGE_UNREACHABLE",
+          `connection to ${MCB_HOST}:${port} closed before the bridge sent hello`
+        ));
       });
     });
   }
 
-  private handleLine(line: string, connectResolve?: () => void, connectTimeout?: NodeJS.Timeout) {
+  /**
+   * Never throws: throwing inside a socket 'data' callback becomes an
+   * uncaught exception that kills the whole MCP process (P0-3).
+   * Errors during handshake are routed to connectErr instead.
+   */
+  private handleLine(line: string, connectOk: () => void, connectErr: (e: Error) => void) {
     let envelope: any;
     try {
       envelope = JSON.parse(line);
@@ -123,16 +164,25 @@ export class Bridge {
       return; // protocol violation from a broken bridge — drop the line
     }
     if (envelope.event === "hello") {
-      this.hello = envelope.data as Hello;
-      if (this.hello.protocol !== 1) {
+      const data = envelope.data;
+      if (!data || typeof data.protocol !== "number") {
         this.disconnect();
-        throw new BridgeError(
+        connectErr(new BridgeError(
           "PROTOCOL_MISMATCH",
-          `bridge speaks MCB v${this.hello.protocol}, consumer speaks v1`
-        );
+          `malformed hello from bridge: ${line.slice(0, 200)}`
+        ));
+        return;
       }
-      if (connectTimeout) clearTimeout(connectTimeout);
-      connectResolve?.();
+      if (data.protocol !== 1) {
+        this.disconnect();
+        connectErr(new BridgeError(
+          "PROTOCOL_MISMATCH",
+          `bridge speaks MCB v${data.protocol}, consumer speaks v1`
+        ));
+        return;
+      }
+      this.hello = data as Hello;
+      connectOk();
       return;
     }
     if (typeof envelope.id === "number" && (envelope.ok !== undefined || envelope.error !== undefined)) {
@@ -180,7 +230,11 @@ export class Bridge {
       this.socket!.write(payload);
     }).then(async (resp: BridgeResponse) => {
       if (resp.ok) return resp.data;
-      throw new BridgeError(resp.error!.code, resp.error!.message);
+      // Defensive: a broken bridge may send ok:false without an error object.
+      throw new BridgeError(
+        resp.error?.code ?? "MALFORMED_RESPONSE",
+        resp.error?.message ?? JSON.stringify(resp).slice(0, 200)
+      );
     });
   }
 }

@@ -11,7 +11,7 @@
    - Appender 必须在游戏内容加载**之前** attach（入口最早时机），否则启动期错误抓不到。
 3. **世界 API 逐个核实**（下表），每个调用点按 §7 走编译探针。
 4. **线程跳转对准目标线程**：Fabric 模板用 `Minecraft.getInstance().execute()`（客户端主线程）；命令执行跳集成服务端线程。NeoForge 侧概念相同、入口类名不同（`Minecraft.getInstance()` 在 Mojmap 两侧同名）。
-5. **截图按渲染管线核实**：`ScreenshotRecorder.takeScreenshot(RenderTarget)` 是 Mojmap 名，版本间签名稳定；若目标环境管线不同（如 26.x 去混淆化时代改名），以反编译为准。
+5. **截图按渲染管线核实**：`net.minecraft.client.Screenshot.takeScreenshot(RenderTarget, Consumer<NativeImage>)` 是 Mojmap 名（回调式，原生输出 PNG）；若目标环境管线不同（如 26.x 去混淆化时代改名），以反编译为准。
 
 ## 历史上容易变的调用点（核实清单）
 
@@ -24,7 +24,7 @@
 | `Commands.performPrefixedCommand(CommandSourceStack, String)` | McbHandlers | Forge 线同名；Quilt 未核实 |
 | `CommandSource` 四方法接口 | McbHandlers | `shouldInformAdmins` 的存在性按版本核实 |
 | `Minecraft.getInstance().getMainRenderTarget()` | McbScreenshot | 26.x 去混淆化时代类名可能再变（见 `versions/1.21.11/vs-26.x-deobf.md`） |
-| `ScreenshotRecorder.takeScreenshot(RenderTarget)` | McbScreenshot | Mojmap 名；返回 `NativeImage`，`asByteArray()` 出 PNG |
+| `Screenshot.takeScreenshot(RenderTarget, Consumer<NativeImage>)` | McbScreenshot | Mojmap 名，回调式；`NativeImage` **没有** `asByteArray()`（历史上有过类似方法，勿凭记忆），PNG 落盘用 `writeToFile(path, false)` 再读回 |
 | `GameType.getName()` | McbHandlers | 返回的是字符串如 `creative` |
 | `Level#getDayTime / isRaining / isThundering` | McbHandlers | 长期稳定；维度 key：`level.dimension().location()` |
 
@@ -38,7 +38,7 @@
 - 入口：`@Mod` 注解类 + `DistExecutor`/`FMLEnvironment.dist` 判客户端；事件总线拿 `ClientPlayerNetworkEvent` 等价时机。
 - 元数据：`META-INF/neoforge.mods.toml`，依赖声明格式不同。
 - 传输层、日志捕获、协议分发逻辑可以**原样复用**（都是 JDK + log4j2 + 原版类）。
-- 已有对照经验：`../../../environments/loaders/fabric-vs-neoforge-1.21.x.md`。
+- 已有对照经验：`../../environments/loaders/fabric-vs-neoforge-1.21.x.md`。
 
 ### 专用服务端（dedicated server）
 - 只能实现协议的子集：`ping`/`status`/`block.get`/`block.scan`/`map.ascii`/`entity.list`/`log.*`/`command.run`（服务端命令源更顺）。

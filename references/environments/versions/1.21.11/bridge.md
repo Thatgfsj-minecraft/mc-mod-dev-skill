@@ -24,6 +24,8 @@
 | `BlockEntity.saveWithFullMetadata(HolderLookup.Provider)` | 与版本卡主卡结论一致（1.20.5+ 签名），返回 `CompoundTag` | `[实测：javap]` |
 | `GameType.getName()` | 存在，返回 `creative` 这类字符串 | `[实测：javap]` |
 | `Inventory.getItem(int)` | 存在（1.21.11 未变） | `[实测：javap]` |
+| `ClientPacketListener.sendChat(String) / sendCommand(String)` | 两者都存在；`sendCommand` 接收**不带**前导 `/` 的命令串（`/` 开头的消息走 `sendChat` 会被拒绝）——command.run 的多人降级路径用 `sendCommand` | `[实测：javap]` |
+| log4j2 `AbstractAppender` 生命周期 | 自建 appender **必须先 `start()` 再 addAppender**——不 start 时 `append()` 被静默跳过（无报错、无日志），这是日志子系统"看起来接好了但什么都不输出"的常见根因 | `[实测：log4j2 生命周期契约]` |
 
 ## 实现侧要点（协议之外的环境事实）
 

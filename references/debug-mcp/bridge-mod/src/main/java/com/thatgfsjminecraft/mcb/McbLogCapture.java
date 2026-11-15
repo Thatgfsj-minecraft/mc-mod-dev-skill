@@ -11,11 +11,13 @@ import org.apache.logging.log4j.core.config.Configuration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * Captures every log line produced by the game process into a ring buffer,
- * and pushes new entries to all connected bridge clients as `log` events.
+ * and pushes new entries to connected bridge clients as `log` events.
  *
  * Implements protocol.md §3.7 (log.history) and §3.8 (log.wait) storage side,
  * plus the `log` event (§2.3).
@@ -25,17 +27,27 @@ import java.util.function.Consumer;
  *   logger. log4j-core is already on the classpath (Minecraft ships it).
  * - Entries get monotonically increasing ids starting at 1, assigned in the
  *   appender thread. Ring buffer capacity 10000 (protocol §3.7).
- * - `overflowed` bookkeeping: when entries are evicted we remember the highest
- *   evicted id so log.history can report gaps (protocol: gaps must be visible).
+ * - §3.7 cursor semantics are implemented in readAfter() exactly as the
+ *   protocol defines them — do not "simplify" them: nextId must advance on
+ *   empty pages, and overflowed must be computable from a single comparison.
+ * - §2.3 backpressure: event push is best-effort. A slow client's outbound
+ *   queue dropping an event is counted in droppedEvents, never blocking the
+ *   logger thread.
  */
 public final class McbLogCapture {
     private McbLogCapture() {}
 
     private static final int CAPACITY = 10000;
+    /** §1 single-line cap: log messages above this are truncated on capture. */
+    private static final int MAX_MESSAGE_CHARS = 8192;
 
     private static final ArrayDeque<Entry> buffer = new ArrayDeque<>(CAPACITY);
     private static long nextId = 1;
-    private static long highestEvictedId = 0;
+
+    /** §2.3: log event pushes dropped because a client's outbound queue was full. */
+    private static final AtomicLong DROPPED_EVENTS = new AtomicLong();
+    public static long droppedEvents() { return DROPPED_EVENTS.get(); }
+    static void onEventDropped() { DROPPED_EVENTS.incrementAndGet(); }
 
     /** Subscribers = connected bridge clients (set by McbServer). */
     private static final List<Consumer<Entry>> subscribers = new ArrayList<>();
@@ -44,6 +56,9 @@ public final class McbLogCapture {
         LoggerContext ctx = (LoggerContext) LogManager.getContext(false);
         Configuration config = ctx.getConfiguration();
         Appender appender = new Appender("McbBridgeAppender");
+        // P0: log4j2 appenders MUST be started before use — an unstarted
+        // appender silently drops every event (no error, no logging at all).
+        appender.start();
         config.addAppender(appender);
         ctx.getRootLogger().addAppender(appender);
         ctx.updateLoggers();
@@ -97,6 +112,11 @@ public final class McbLogCapture {
                 }
                 message = sb.toString();
             }
+            // §1 single-line cap: truncate BEFORE serialization so one huge
+            // log line can never break NDJSON framing at the transport.
+            if (message.length() > MAX_MESSAGE_CHARS) {
+                message = message.substring(0, MAX_MESSAGE_CHARS) + "...(truncated)";
+            }
             Entry entry;
             List<Consumer<Entry>> currentSubs;
             synchronized (McbLogCapture.class) {
@@ -104,8 +124,7 @@ public final class McbLogCapture {
                         event.getLevel().name(), event.getLoggerName(),
                         event.getThreadName(), message);
                 if (buffer.size() >= CAPACITY) {
-                    buffer.pollFirst();
-                    highestEvictedId = entry.id - CAPACITY;
+                    buffer.pollFirst(); // ring eviction: oldest entries go first
                 }
                 buffer.addLast(entry);
                 currentSubs = List.copyOf(subscribers);
@@ -120,28 +139,51 @@ public final class McbLogCapture {
         }
     }
 
-    /** Snapshot of entries with id > afterId. Returns entries + nextId + overflow flag. */
-    public static synchronized Snapshot readAfter(long afterId, int limit) {
+    /**
+     * §3.7 log.history — cursor semantics implemented EXACTLY as protocol.md
+     * defines them (both reference implementations must agree on these):
+     *
+     * - entries: id > afterId AND passing levelMin; limit applies AFTER
+     *   filtering (levelMin is a read-time filter — the buffer always holds
+     *   all levels so switching levelMin never changes the "history").
+     * - nextId: raw id of the last entry scanned. When the whole buffer was
+     *   scanned (page not cut short by limit), that is the newest raw id —
+     *   so a page with zero matches still advances the cursor and never spins.
+     *   When the page WAS cut short, nextId is the raw id we stopped at — the
+     *   next page continues right after it, so filtered-out entries are never
+     *   skipped over by a limited page.
+     * - overflowed: oldest buffered id > afterId + 1, i.e. raw entries in
+     *   (afterId, oldest) were evicted. Gaps must be visible (§3.7).
+     */
+    public static synchronized Snapshot readAfter(long afterId, Level minLevel, int limit) {
         List<Entry> out = new ArrayList<>();
-        long last = afterId;
+        long cursor = afterId;
+        boolean scanComplete = true;
         for (Entry e : buffer) {
-            if (e.id > afterId) {
-                if (out.size() >= limit) {
-                    return new Snapshot(out, last, false);
-                }
+            if (e.id <= afterId) continue;
+            cursor = e.id;
+            if (out.size() < limit && levelAtLeast(e.level, minLevel)) {
                 out.add(e);
-                last = e.id;
+                if (out.size() >= limit) {
+                    scanComplete = false;
+                    break;
+                }
             }
         }
-        return new Snapshot(out, last, afterId > 0 && afterId < highestEvictedId);
+        if (scanComplete) {
+            long newest = nextId - 1;
+            if (cursor < newest) cursor = newest;
+        }
+        boolean overflowed = !buffer.isEmpty() && buffer.peekFirst().id > afterId + 1;
+        return new Snapshot(out, cursor, overflowed);
     }
 
     public static final class Snapshot {
         public final List<Entry> entries;
-        public final long lastId;
+        public final long nextId;
         public final boolean overflowed;
-        Snapshot(List<Entry> entries, long lastId, boolean overflowed) {
-            this.entries = entries; this.lastId = lastId; this.overflowed = overflowed;
+        Snapshot(List<Entry> entries, long nextId, boolean overflowed) {
+            this.entries = entries; this.nextId = nextId; this.overflowed = overflowed;
         }
     }
 
@@ -150,8 +192,7 @@ public final class McbLogCapture {
     }
 
     /** Check whether any buffered entry with id > afterId matches the pattern. */
-    public static synchronized Entry findMatch(String regex, Level minLevel, long afterId) {
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(regex);
+    public static synchronized Entry findMatch(Pattern p, Level minLevel, long afterId) {
         for (Entry e : buffer) {
             if (e.id > afterId && levelAtLeast(e.level, minLevel) && p.matcher(e.message).find()) {
                 return e;

@@ -3,6 +3,10 @@
  *
  * The mapping rule (protocol.md §3): tools never introduce a second abstraction
  * over ops. If a tool needs a new capability, the protocol gets a new op first.
+ *
+ * Error contract: every failure path returns a tool result with
+ * `isError: true` so MCP clients can distinguish failures from data
+ * (protocol.md §5 codes are echoed in the text for AI readability).
  */
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,15 +21,19 @@ function text(content: unknown): { content: [{ type: "text"; text: string }] } {
   };
 }
 
+function errorText(e: unknown): { isError: true; content: [{ type: "text"; text: string }] } {
+  const body = e instanceof BridgeError
+    ? `[MCB ${e.code}] ${e.message}`
+    : `[MCB INTERNAL] ${(e as Error)?.message ?? String(e)}`;
+  return { isError: true, content: [{ type: "text", text: body }] };
+}
+
 function wrap(handler: (args: any) => Promise<any>) {
   return async (args: any) => {
     try {
       return text(await handler(args));
-    } catch (e: any) {
-      if (e instanceof BridgeError) {
-        return text(`[MCB ${e.code}] ${e.message}`);
-      }
-      return text(`[MCB INTERNAL] ${e?.message ?? String(e)}`);
+    } catch (e) {
+      return errorText(e);
     }
   };
 }
@@ -57,29 +65,40 @@ export function registerTools(server: McpServer): void {
       title: "Get one block",
       description: "Read a single block: id, state properties, block entity type and NBT. Use for precise checks after mc_map / mc_scan.",
       inputSchema: {
-        x: intVec.describe("[x, y, z] of the block"),
+        x: z.number().int().describe("block X coordinate"),
+        y: z.number().int().describe("block Y coordinate"),
+        z: z.number().int().describe("block Z coordinate"),
+        dimension: z.string().optional().describe('dimension id like "minecraft:overworld" (default: player dimension)'),
       },
     },
-    wrap(async (args: any) => bridge.request("block.get", { x: args.x })),
+    wrap(async (args: any) => {
+      // Protocol §3.3: flat x/y/z params, NOT a tuple under a single key.
+      const params: Record<string, any> = { x: args.x, y: args.y, z: args.z };
+      if (args.dimension !== undefined) params.dimension = args.dimension;
+      return bridge.request("block.get", params);
+    }),
   );
 
   server.registerTool(
     "mc_scan_blocks",
     {
       title: "Scan blocks in a box",
-      description: "List all non-air blocks inside [min, max] (volume <= 4096), optionally filtered by block ids (\"minecraft:stone\") or tags (\"#minecraft:logs\").",
+      description: 'List all non-air blocks inside [min, max] (volume <= 4096), optionally filtered by block ids ("minecraft:stone") or tags ("#minecraft:logs").',
       inputSchema: {
         min: intVec,
         max: intVec,
-        filter: z.array(z.string()).optional().describe("block ids or #tags; empty = everything"),
+        filter: z.array(z.string()).optional().describe("block ids or #tags; omit for everything"),
         includeProperties: z.boolean().optional().describe("include blockstate properties (default false)"),
       },
     },
-    wrap(async (args: any) =>
-      bridge.request("block.scan", {
-        min: args.min, max: args.max,
-        filter: args.filter ?? [], includeProperties: args.includeProperties ?? false,
-      })),
+    wrap(async (args: any) => {
+      // Protocol §3.4: filter is optional — omit the key entirely rather than
+      // sending [] (an empty array has no protocol-defined meaning).
+      const params: Record<string, any> = { min: args.min, max: args.max };
+      if (args.filter !== undefined) params.filter = args.filter;
+      if (args.includeProperties !== undefined) params.includeProperties = args.includeProperties;
+      return bridge.request("block.scan", params);
+    }),
   );
 
   server.registerTool(
@@ -108,27 +127,30 @@ export function registerTools(server: McpServer): void {
       inputSchema: {
         min: intVec,
         max: intVec,
-        type: z.array(z.string()).optional().describe("entity type id filter, e.g. minecraft:item"),
+        type: z.array(z.string()).optional().describe("entity type id or #tag filter; omit for all"),
       },
     },
-    wrap(async (args: any) =>
-      bridge.request("entity.list", { min: args.min, max: args.max, type: args.type ?? [] })),
+    wrap(async (args: any) => {
+      const params: Record<string, any> = { min: args.min, max: args.max };
+      if (args.type !== undefined) params.type = args.type;
+      return bridge.request("entity.list", params);
+    }),
   );
 
   server.registerTool(
     "mc_logs",
     {
       title: "Read game logs (incremental)",
-      description: "Read game log lines after a cursor id. First call: omit afterId. Later calls: pass the nextId returned before. overflowed=true means some earlier lines were evicted (a gap you cannot recover).",
+      description: "Read game log lines after a cursor id. First call: omit afterId. Later calls: pass the nextId returned before. overflowed=true means some earlier lines were evicted (a gap you cannot recover). NOTE: log ids are per-game-session — after the game restarts (reconnect), start over with afterId=0.",
       inputSchema: {
-        afterId: z.number().optional().describe("return entries with id > afterId (default 0 = from buffer start)"),
-        limit: z.number().int().optional().describe("max entries (default 500)"),
+        afterId: z.number().int().describe("return entries with id > afterId (0 = from buffer start)"),
+        limit: z.number().int().optional().describe("max entries (default 500, max 1000)"),
         levelMin: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).optional(),
       },
     },
     wrap(async (args: any) =>
       bridge.request("log.history", {
-        afterId: args.afterId ?? 0, limit: args.limit ?? 500, levelMin: args.levelMin ?? "INFO",
+        afterId: args.afterId, limit: args.limit ?? 500, levelMin: args.levelMin ?? "INFO",
       })),
   );
 
@@ -141,12 +163,17 @@ export function registerTools(server: McpServer): void {
         pattern: z.string().describe("regex matched against the whole log message"),
         levelMin: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).optional(),
         timeoutMs: z.number().int().optional().describe("default 10000, max 60000"),
+        afterId: z.number().int().optional().describe("only consider entries with id > afterId (default 0)"),
       },
     },
-    wrap(async (args: any) =>
-      bridge.request("log.wait", {
+    wrap(async (args: any) => {
+      // Protocol §3.8: afterId is optional — omit when unset.
+      const params: Record<string, any> = {
         pattern: args.pattern, levelMin: args.levelMin ?? "INFO", timeoutMs: args.timeoutMs ?? 10000,
-      }, 90000)),
+      };
+      if (args.afterId !== undefined) params.afterId = args.afterId;
+      return bridge.request("log.wait", params, 90000);
+    }),
   );
 
   server.registerTool(
@@ -155,7 +182,7 @@ export function registerTools(server: McpServer): void {
       title: "Run a game command",
       description: "Execute a Minecraft command (no leading slash) as operator level 4 on the integrated server: setblock, tp, summon, time set, give, etc. Primary way for you to set up test scenes.",
       inputSchema: {
-        command: z.string().describe("command without leading slash, e.g. \"setblock 0 64 0 minecraft:stone\""),
+        command: z.string().describe('command without leading slash, e.g. "setblock 0 64 0 minecraft:stone"'),
         timeoutMs: z.number().int().optional(),
       },
     },
@@ -169,20 +196,22 @@ export function registerTools(server: McpServer): void {
     "mc_screenshot",
     {
       title: "Take a screenshot",
-      description: "Capture the game window as a PNG image so you can visually inspect the game (multimodal).",
+      description: "Capture the game window as a JPEG image so you can visually inspect the game (multimodal).",
       inputSchema: {},
     },
     async () => {
       try {
         const data: any = await bridge.request("screenshot.take", {}, 15000);
+        // Protocol §3.11: bridge decides the format (v1 reference = jpeg).
+        const mime = data.format === "png" ? "image/png" : "image/jpeg";
         return {
           content: [
-            { type: "image", mimeType: "image/png", data: data.dataBase64 },
-            { type: "text", text: `${data.width}x${data.height} png` },
+            { type: "image", mimeType: mime, data: data.dataBase64 },
+            { type: "text", text: `${data.width}x${data.height} ${data.format}` },
           ],
         };
-      } catch (e: any) {
-        return text(e instanceof BridgeError ? `[MCB ${e.code}] ${e.message}` : String(e));
+      } catch (e) {
+        return errorText(e);
       }
     },
   );

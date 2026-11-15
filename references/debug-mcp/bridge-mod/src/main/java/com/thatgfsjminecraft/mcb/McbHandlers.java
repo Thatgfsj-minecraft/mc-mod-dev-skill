@@ -58,6 +58,8 @@ final class McbHandlers {
         o.addProperty("game", mc.getLaunchedVersion());
         o.addProperty("loader", "fabric");
         o.addProperty("side", "client");
+        // §2.3 backpressure visibility: pushes dropped for slow clients.
+        o.addProperty("droppedEvents", McbLogCapture.droppedEvents());
         boolean worldLoaded = level != null;
         o.addProperty("worldLoaded", worldLoaded);
         if (!worldLoaded) {
@@ -196,7 +198,7 @@ final class McbHandlers {
                                 boolean includeProperties, ClientLevel level) {
         long volume = (long) (max[0] - min[0] + 1) * (max[1] - min[1] + 1) * (max[2] - min[2] + 1);
         if (volume > SCAN_VOLUME_LIMIT) {
-            throw new IllegalArgumentException("volume " + volume + " exceeds limit " + SCAN_VOLUME_LIMIT);
+            throw new McbServer.OpException("TOO_LARGE", "volume " + volume + " exceeds limit " + SCAN_VOLUME_LIMIT);
         }
         List<TagKey<Block>> tags = new ArrayList<>();
         List<String> ids = new ArrayList<>();
@@ -274,15 +276,20 @@ final class McbHandlers {
     // §3.5 map.ascii
     // =====================================================================
     static JsonObject mapAscii(int[] min, int[] max, String mode, Integer sliceY, ClientLevel level) {
+        // Dispatch already validated mode/volume on the TCP thread; these are
+        // defensive re-checks (must use OpException so failures map to the
+        // protocol error codes, not INTERNAL).
+        boolean slice = "slice".equals(mode);
+        if (slice && sliceY == null) {
+            throw new McbServer.OpException("BAD_PARAMS", "mode=slice requires y");
+        }
         int width = max[0] - min[0] + 1;
         int depth = max[2] - min[2] + 1;
         if (width > MAP_DIM_LIMIT || depth > MAP_DIM_LIMIT) {
-            throw new IllegalArgumentException("map grid " + width + "x" + depth + " exceeds " + MAP_DIM_LIMIT + "x" + MAP_DIM_LIMIT);
+            throw new McbServer.OpException("TOO_LARGE",
+                    "map grid " + width + "x" + depth + " exceeds " + MAP_DIM_LIMIT + "x" + MAP_DIM_LIMIT);
         }
-        boolean top = !"slice".equals(mode);
-        if (!top && sliceY == null) {
-            throw new IllegalArgumentException("mode=slice requires y");
-        }
+        boolean top = !slice;
         char[][] grid = new char[depth][width];
         // Protocol §3.5: air is always '.'; conflicts fall through to backups.
         String backupChars = "#@%*+=~^!?:;";
@@ -402,7 +409,8 @@ final class McbHandlers {
         // - so we parse + execute via the brigadier dispatcher directly:
         //   parse errors and CommandSyntaxException become success=false.
         StringBuilder feedback = new StringBuilder();
-        CommandCollector source = new CommandCollector(feedback);
+        java.util.List<String> feedbackLines = new ArrayList<>();
+        CommandCollector source = new CommandCollector(feedback, feedbackLines);
         var stack = server.createCommandSourceStack()
                 .withPermission(net.minecraft.server.permissions.PermissionSet.ALL_PERMISSIONS)
                 .withSource(source);
@@ -436,18 +444,35 @@ final class McbHandlers {
         if (errorText != null) {
             text = (text.isEmpty() ? "" : text + "\n") + errorText;
         }
+        // §1 single-line cap guard: keep the whole response under 1 MiB.
+        if (text.length() > 8192) {
+            text = text.substring(0, 8192) + "...(truncated)";
+        }
         o.addProperty("resultText", text);
+        // §3.9: individual feedback lines (what the command actually printed),
+        // so an AI can parse discrete outputs instead of one blob.
+        JsonArray feedbackArr = new JsonArray();
+        for (String l : feedbackLines) {
+            feedbackArr.add(l);
+        }
+        o.add("feedback", feedbackArr);
         return o;
     }
 
     /** CommandSource that collects chat/feedback lines into a StringBuilder. */
     private static final class CommandCollector implements net.minecraft.commands.CommandSource {
         private final StringBuilder sink;
-        CommandCollector(StringBuilder sink) { this.sink = sink; }
+        private final List<String> lines;
+        CommandCollector(StringBuilder sink, List<String> lines) {
+            this.sink = sink;
+            this.lines = lines;
+        }
 
         @Override
         public void sendSystemMessage(Component message) {
-            sink.append(message.getString()).append('\n');
+            String s = message.getString();
+            sink.append(s).append('\n');
+            lines.add(s);
         }
 
         @Override
