@@ -32,4 +32,5 @@
 - **零依赖成立**：传输层（JDK `ServerSocket` + Gson）+ log4j2 Appender + 原版类，`fabric.mod.json` 无需声明 fabric-api。`[实测：编译探针]`
 - **log4j2 core 在 MC 类路径上**：`org.apache.logging.log4j.core.appender.AbstractAppender` 可直接 extends，attach 到 root logger 无需额外依赖声明。`[实测：编译探针]`
 - **桥接端口**：默认 25585，`-Dmcb.port` 覆盖（实现在 `McbMod`）。
+- **`fabric.mod.json` 的 loader 下限别写死成开发时的 loader 版本**：入口只用 `ClientModInitializer`（远古稳定 API），参考实现声明 `fabricloader >=0.16.0` 即可。曾因声明 `>=0.19.0` 而在 Loader 0.18.4 的实例上被 Fabric 直接拒绝加载（报依赖不满足）——构建用的 loader 版本 ≠ 运行时实例的 loader 版本，这是"编译全绿但游戏里根本不出现这个 Mod"的头号原因。`[实测：本机 HMCL 实例 Loader 0.18.4]`
 - **运行时验证清单（待办）**：`ping`/`status`/`block.get`/`log.history`/`command.run` 五条主路径 + 截图，按 `references/debug-mcp.md` §5 执行后把结果回填本文件。
