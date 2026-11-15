@@ -50,6 +50,33 @@ const server = net.createServer((socket) => {
           reply({ x: req.params.x, y: req.params.y, z: req.params.z, id: "minecraft:stone", properties: {}, hasBlockEntity: false });
           break;
         }
+        case "camera.eye": {
+          // Strict param shape: camera eye params must arrive flat + numeric,
+          // fov optional (protocol §3.12).
+          const q = req.params;
+          if (![q.x, q.y, q.z, q.yaw, q.pitch].every((v) => typeof v === "number")) {
+            fail("BAD_PARAMS", "fake bridge requires flat numeric x/y/z/yaw/pitch (protocol §3.12)");
+            break;
+          }
+          reply({
+            format: "png", width: 1280, height: 720, dataBase64: "ZmFrZQ==",
+            pose: { x: q.x, y: q.y, z: q.z, yaw: q.yaw, pitch: q.pitch, fov: q.fov ?? null },
+            chunks: { centerLoaded: true, loadedNearby: 25, nearbyWindow: 25 },
+          });
+          break;
+        }
+        case "camera.set": {
+          const q = req.params;
+          if (![q.x, q.y, q.z, q.yaw, q.pitch].every((v) => typeof v === "number")) {
+            fail("BAD_PARAMS", "fake bridge requires flat numeric x/y/z/yaw/pitch (protocol §3.12)");
+            break;
+          }
+          reply({ active: true, mode: "persistent", pose: { x: q.x, y: q.y, z: q.z, yaw: q.yaw, pitch: q.pitch, fov: q.fov ?? null } });
+          break;
+        }
+        case "camera.clear":
+          reply({ active: false, mode: "none" });
+          break;
         default: fail("BAD_OP", `unknown op: ${req.op}`);
       }
     }
@@ -139,6 +166,36 @@ if (cmd.result.isError !== true || !cmdText.startsWith("[MCB BAD_OP]")) {
   throw new Error(`expected [MCB BAD_OP] contract error, got: ${cmdText.slice(0, 200)}`);
 }
 console.log("BAD_OP contract ok");
+
+// 4. mc_camera_eye: flat numeric params + image + pose/chunks passthrough.
+send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: {
+  name: "mc_camera_eye", arguments: { x: 24.5, y: -61.0, z: 8.2, yaw: 90, pitch: 10, fov: 60 } } });
+const eye = await wait(5);
+const eyeImg = eye.result?.content?.find((c) => c.type === "image");
+const eyeText = eye.result?.content?.find((c) => c.type === "text")?.text ?? "";
+if (eye.result.isError === true || !eyeImg || eyeImg.mimeType !== "image/png") {
+  throw new Error(`mc_camera_eye failed: ${JSON.stringify(eye.result).slice(0, 300)}`);
+}
+if (!eyeText.includes("yaw=90") || !eyeText.includes("fov=60")) {
+  throw new Error(`mc_camera_eye text missing pose echo: ${eyeText}`);
+}
+console.log("mc_camera_eye ok:", eyeText.slice(0, 140));
+
+// 5. mc_camera_set / mc_camera_clear round trip.
+send({ jsonrpc: "2.0", id: 6, method: "tools/call", params: {
+  name: "mc_camera_set", arguments: { x: 1, y: 2, z: 3, yaw: 0, pitch: 0 } } });
+const camSet = await wait(6);
+const setData = JSON.parse(camSet.result.content[0].text);
+if (camSet.result.isError === true || setData.mode !== "persistent") {
+  throw new Error(`mc_camera_set failed: ${camSet.result.content[0].text.slice(0, 200)}`);
+}
+send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "mc_camera_clear", arguments: {} } });
+const camClear = await wait(7);
+const clearData = JSON.parse(camClear.result.content[0].text);
+if (camClear.result.isError === true || clearData.active !== false) {
+  throw new Error(`mc_camera_clear failed: ${camClear.result.content[0].text.slice(0, 200)}`);
+}
+console.log("camera set/clear round trip ok");
 
 proc.removeAllListeners("exit");
 proc.kill();

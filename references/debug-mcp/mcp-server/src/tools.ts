@@ -215,4 +215,76 @@ export function registerTools(server: McpServer): void {
       }
     },
   );
+
+  server.registerTool(
+    "mc_camera_eye",
+    {
+      title: "Sky-eye one-shot screenshot",
+      description: "Render ONE frame from an arbitrary virtual camera (position + yaw/pitch + optional fov) WITHOUT teleporting the player, capture it as PNG and restore the player view. Use this instead of tp+screenshot: the player does not move, nothing falls, and Jade-style crosshair tooltips follow the virtual camera. Returns pose + chunks info: chunks.centerLoaded=false or low chunks.loadedNearby means the camera is outside loaded chunks — run mc_command 'forceload add <cx> <cz>' around that spot first, then shoot again.",
+      inputSchema: {
+        x: z.number().describe("camera eye X (double, e.g. 24.5)"),
+        y: z.number().describe("camera eye Y"),
+        z: z.number().describe("camera eye Z"),
+        yaw: z.number().describe("yaw in degrees, 0=south(+Z), 90=west(-X), 180=north(-Z), 270=east(+X)"),
+        pitch: z.number().describe("pitch in degrees, -90=straight up, 0=horizon, 90=straight down"),
+        fov: z.number().optional().describe("override projection fov in degrees (1-360); omit to keep the player's fov"),
+      },
+    },
+    async (args: any) => {
+      try {
+        const params: Record<string, any> = {
+          x: args.x, y: args.y, z: args.z, yaw: args.yaw, pitch: args.pitch,
+        };
+        if (args.fov !== undefined) params.fov = args.fov;
+        const data: any = await bridge.request("camera.eye", params, 15000);
+        const mime = data.format === "png" ? "image/png" : "image/jpeg";
+        const pose = data.pose ?? {};
+        const chunks = data.chunks ?? {};
+        const chunkNote = chunks.centerLoaded === false
+          ? " | WARNING: camera chunk NOT loaded - image is likely void; forceload first"
+          : ` | chunks near camera: ${chunks.loadedNearby ?? "?"}/${chunks.nearbyWindow ?? 25} loaded`;
+        return {
+          content: [
+            { type: "image", mimeType: mime, data: data.dataBase64 },
+            { type: "text", text: `${data.width}x${data.height} | pose: x=${pose.x} y=${pose.y} z=${pose.z} yaw=${pose.yaw} pitch=${pose.pitch} fov=${pose.fov ?? "player"}${chunkNote}` },
+          ],
+        };
+      } catch (e) {
+        return errorText(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "mc_camera_set",
+    {
+      title: "Enter persistent free camera",
+      description: "Lock the render camera to a virtual pose PERSISTENTLY (every frame until mc_camera_clear). The player stays where they are. Combine with mc_screenshot for multiple viewpoints-free shots, and Jade tooltips follow this camera. Restore the player view with mc_camera_clear when done.",
+      inputSchema: {
+        x: z.number().describe("camera eye X"),
+        y: z.number().describe("camera eye Y"),
+        z: z.number().describe("camera eye Z"),
+        yaw: z.number().describe("yaw in degrees, 0=south(+Z)"),
+        pitch: z.number().describe("pitch in degrees, -90=up, 90=down"),
+        fov: z.number().optional().describe("override projection fov in degrees (1-360); omit to keep the player's fov"),
+      },
+    },
+    wrap(async (args: any) => {
+      const params: Record<string, any> = {
+        x: args.x, y: args.y, z: args.z, yaw: args.yaw, pitch: args.pitch,
+      };
+      if (args.fov !== undefined) params.fov = args.fov;
+      return bridge.request("camera.set", params);
+    }),
+  );
+
+  server.registerTool(
+    "mc_camera_clear",
+    {
+      title: "Exit free camera",
+      description: "Restore the normal player-attached camera (exits mc_camera_set / cancels a pending mc_camera_eye).",
+      inputSchema: {},
+    },
+    wrap(() => bridge.request("camera.clear")),
+  );
 }

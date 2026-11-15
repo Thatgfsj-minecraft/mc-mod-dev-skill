@@ -8,6 +8,7 @@
   "entrypoints": {
     "client": ["com.thatgfsjminecraft.mcb.McbMod"]
   },
+  "mixins": ["mcb.mixins.json"],
   "depends": {
     "fabricloader": ">=0.16.0",
     "minecraft": "~1.21.11",

@@ -446,6 +446,55 @@ final class McbServer {
                         } catch (InterruptedException ignored) {}
                     });
                 }
+                case "camera.eye" -> {
+                    // §3.12 one-shot sky-eye: set pose -> next frame renders with
+                    // the virtual camera -> capture -> restore (see McbCamera).
+                    double[] pos = vec3Double(params);
+                    float camYaw = floatOf(params.get("yaw"), "yaw");
+                    float camPitch = floatOf(params.get("pitch"), "pitch");
+                    Float camFov = params.has("fov") && params.get("fov").isJsonPrimitive()
+                            ? floatOf(params.get("fov"), "fov") : null;
+                    Minecraft.getInstance().execute(() -> {
+                        try {
+                            McbHandlers.requireLevel(); // fail fast before arming the capture
+                            McbCamera.startOneShot(pos[0], pos[1], pos[2], camYaw, camPitch, camFov,
+                                    img -> sendOk(id, img), msg -> sendError(id, "INTERNAL", msg));
+                        } catch (OpException e) {
+                            sendError(id, e.code, e.getMessage());
+                        } catch (Exception e) {
+                            sendError(id, "INTERNAL", e.getClass().getName() + ": " + e.getMessage());
+                        }
+                    });
+                    // Same watchdog rationale as screenshot.take: the capture
+                    // fires between frames; if rendering stops we must not
+                    // leave the request unanswered.
+                    LOG_WAIT_POOL.submit(() -> {
+                        try {
+                            Thread.sleep(10000);
+                            if (!closed) sendError(id, "TIMEOUT", "camera.eye exceeded 10000ms");
+                        } catch (InterruptedException ignored) {}
+                    });
+                }
+                case "camera.set" -> hop(id, () -> {
+                    McbHandlers.requireLevel();
+                    double[] pos = vec3Double(params);
+                    float camYaw = floatOf(params.get("yaw"), "yaw");
+                    float camPitch = floatOf(params.get("pitch"), "pitch");
+                    Float camFov = params.has("fov") && params.get("fov").isJsonPrimitive()
+                            ? floatOf(params.get("fov"), "fov") : null;
+                    McbCamera.setPersistent(pos[0], pos[1], pos[2], camYaw, camPitch, camFov);
+                    return McbCamera.describePersistent();
+                });
+                case "camera.clear" -> {
+                    // Volatile-flag writes only — safe without a main-thread hop.
+                    // An un-captured one-shot is cancelled with an error response
+                    // so protocol §2.2 (exactly one response per request) holds.
+                    McbCamera.clear(msg -> sendError(id, "INTERNAL", msg));
+                    JsonObject data = new JsonObject();
+                    data.addProperty("active", false);
+                    data.addProperty("mode", "none");
+                    sendOk(id, data);
+                }
                 default -> sendError(id, "BAD_OP", "unknown op: " + op);
             }
         }
@@ -548,6 +597,38 @@ final class McbServer {
         private static long longParam(JsonObject params, String name, long dflt) {
             if (!params.has(name) || !params.get(name).isJsonPrimitive()) return dflt;
             return params.get(name).getAsLong();
+        }
+
+        /**
+         * §3.12 camera params: x/y/z are camera EYE positions — doubles, not
+         * block coordinates (McbHandlers.parseVec3 is the integer variant for
+         * block ops). Accepts numbers or numeric strings like other params.
+         */
+        private static double[] vec3Double(JsonObject params) {
+            double x = doubleOf(params.get("x"), "x");
+            double y = doubleOf(params.get("y"), "y");
+            double z = doubleOf(params.get("z"), "z");
+            return new double[] { x, y, z };
+        }
+
+        private static double doubleOf(JsonElement el, String name) {
+            if (el == null || !el.isJsonPrimitive()) {
+                throw new OpException("BAD_PARAMS", name + " must be a number");
+            }
+            var p = el.getAsJsonPrimitive();
+            if (p.isNumber()) return p.getAsDouble();
+            if (p.isString()) {
+                try {
+                    return Double.parseDouble(p.getAsString());
+                } catch (NumberFormatException e) {
+                    throw new OpException("BAD_PARAMS", name + " is not numeric");
+                }
+            }
+            throw new OpException("BAD_PARAMS", name + " must be a number");
+        }
+
+        private static float floatOf(JsonElement el, String name) {
+            return (float) doubleOf(el, name);
         }
     }
 }

@@ -221,6 +221,45 @@
 - 尺寸超过 1280 宽时建议等比缩小（消费端模型上下文有限）——推荐实现，非硬约束。
 - 实现必须把像素读取投递到渲染线程执行，禁止在 TCP 线程碰 GL 上下文（见 bridge-mod 实现要点）。
 
+### 3.12 `camera.eye` / `camera.set` / `camera.clear`（天眼自由相机，v1 后向兼容扩展）
+
+动机：AI 想看某个位置时不必 `tp` 玩家过去（玩家会下落、状态会被污染）。桥接端在**渲染线程的相机装配点**临时覆盖相机姿态，渲染一帧后抓帧恢复——玩家不动，一帧延迟（~16ms）。
+
+#### `camera.eye`（一次性）
+
+参数：`x`,`y`,`z`（**双精度浮点**，相机眼位，不是方块坐标）、`yaw`（浮点，0=南/+Z，90=西/-X，180=北/-Z，270=东/+X）、`pitch`（浮点，-90=正上，0=水平，90=正下）；可选 `fov`（浮点，度，覆盖投影 FOV，缺省沿用玩家 FOV）。
+
+响应 data：
+
+```json
+{
+  "format": "png", "width": 1280, "height": 720, "dataBase64": "...",
+  "pose": {"x": 24.5, "y": -61.0, "z": 8.2, "yaw": 90.0, "pitch": 10.0, "fov": 60.0},
+  "chunks": {"centerLoaded": true, "loadedNearby": 25, "nearbyWindow": 25}
+}
+```
+
+- `pose`：本次实际使用的相机姿态（`fov` 为 `null` 表示未覆盖）。
+- `chunks`：**区块加载可见性**（天眼唯一的坑）。`centerLoaded=false` 或 `loadedNearby` 明显小于 `nearbyWindow` 说明相机处客户端区块未加载，拍到的是虚空；消费端应先 `command.run` 执行 `forceload add <chunkX> <chunkZ>`（或把玩家 TP 过去加载）再拍。
+- 姿态覆盖发生在原版 `Camera.setup` 之后、准星射线检测之前，因此 **Jade/WTHIT 信息栏跟随虚拟相机**——这是本 op 的免费赠品。
+- 世界未加载 → `WORLD_NOT_LOADED`；渲染管线长时间未产帧（如最小化且暂停渲染）→ `TIMEOUT`（10s，同 §3.11 看门狗）。
+- 等待期间被 `camera.clear` 打断 → 以 `INTERNAL` 报 `camera request cancelled by camera.clear`（保证 §2.2 恰好一个响应）。
+
+#### `camera.set`（持久模式）
+
+参数同 `camera.eye`。响应 data：`{"active": true, "mode": "persistent", "pose": {...}}`
+
+进入自由相机：每帧都覆盖姿态，直到 `camera.clear`。配合 `screenshot.take` 可多次取景；准星射线（Jade）同样跟随。玩家本体不动、不受影响。
+
+#### `camera.clear`
+
+参数：无。响应 data：`{"active": false, "mode": "none"}`
+
+退出自由相机，恢复角色视角；同时取消未完成的 `camera.eye`（见上）。
+
+- `status`（§3.2）新增可选字段 `cameraMode`：`"none" | "one-shot" | "persistent"`。
+- 实现要点：姿态覆盖与 FOV 覆盖**必须在渲染线程**完成（Fabric 参考实现走 Mixin：`Camera.setup` TAIL + `GameRenderer.getFov` TAIL）；抓帧复用 §3.11 的像素读取路径，在两帧之间读取仍持有虚拟相机画面的帧缓冲。
+
 ## 4. 版本化
 
 - `protocol` 主版本号出现在 `hello` 中。**新增 op、新增可选参数、新增响应字段 = 向后兼容，主版本号不变**。

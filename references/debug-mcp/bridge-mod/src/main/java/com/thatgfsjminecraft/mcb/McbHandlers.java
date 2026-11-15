@@ -60,6 +60,8 @@ final class McbHandlers {
         o.addProperty("side", "client");
         // §2.3 backpressure visibility: pushes dropped for slow clients.
         o.addProperty("droppedEvents", McbLogCapture.droppedEvents());
+        // §3.12 additive field: sky-eye camera mode (none / one-shot / persistent).
+        o.addProperty("cameraMode", McbCamera.statusMode());
         boolean worldLoaded = level != null;
         o.addProperty("worldLoaded", worldLoaded);
         if (!worldLoaded) {
