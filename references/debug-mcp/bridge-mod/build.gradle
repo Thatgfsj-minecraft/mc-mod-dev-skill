@@ -1,0 +1,29 @@
+plugins {
+    id 'fabric-loom' version '1.17.21'
+}
+
+base.archivesName = project.archives_base_name
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    // Intentionally NO fabric-api: this mod only uses loader entrypoints,
+    // vanilla classes and libraries shipped with Minecraft (Gson, log4j2).
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}

@@ -9,6 +9,7 @@ Architecture:                     Generic / extensible
 Currently validated environments: （这是 reference 覆盖范围，不代表 Skill 的支持边界）
 - 已验证差异经验：Minecraft 1.21.1 ↔ 1.21.11 × Fabric / NeoForge（Mojmap，Java 21）
 - 版本卡（结构事实）：覆盖清单的唯一事实来源见 references/environments/versions/README.md
+- 实时调试基建（MCB v1）：协议规范 + Fabric 1.21.11 桥接实现（编译探针实测）+ 环境无关 MCP Server，见 references/debug-mcp.md
 ```
 
 ## 解决什么问题
@@ -42,6 +43,11 @@ references/
   api-verification.md               API 核实规程（找 jar、读源码、记忆陷阱清单）
   pitfalls.md                       踩坑手册（通用坑 + 案例研究）
   e2e-testing.md                    专用服务器 + 服务端权威断言的 E2E 体系
+  debug-mcp.md                      实时调试基建（MCB）使用指南
+  debug-mcp/
+    protocol.md                     MCB v1 线协议规范（TCP + NDJSON，环境无关契约）
+    bridge-mod/                     极简桥接 Mod：Fabric 1.21.11 参考实现（零依赖）+ PORTING.md 移植指南
+    mcp-server/                     MCP Server：TypeScript 参考消费端（工具与协议 op 一一对应）
   environments/
     versions/README.md              版本知识索引（覆盖表、缺号说明、版本卡模板、新增流程）
     versions/1.7.10/ … 1.21.11/     各版本文件夹（传奇老线 + 现代线共 18 个版本）：README.md 版本卡；已验证差异放 <旧版本>/vs-*.md
@@ -55,6 +61,7 @@ references/
 - 跨版本 / 跨 Loader 迁移（版本对差异对照 + 编译两遍 + 行为测试兜底）
 - 排查交互类 bug（界面闪关、客户端与服务端行为不一致、数据静默丢失）
 - 搭建模组的自动化 E2E 测试（机器人 + 服务端权威断言）
+- AI 实时调试闭环（MCB）：改代码 → 进游戏 → 读日志/看世界/跑命令 → 再修，全程无需人工转述
 
 ## 安装（AI agent）
 

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "mcb",
+  "version": "0.1.0",
+  "name": "MC Debug Bridge",
+  "description": "AI debugging bridge: zero-dependency NDJSON TCP server exposing world state, live logs, commands and screenshot (MCB v1 protocol). Local-only, development use.",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.thatgfsjminecraft.mcb.McbMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  }
+}

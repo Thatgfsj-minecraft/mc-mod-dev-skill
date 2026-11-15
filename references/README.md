@@ -9,6 +9,7 @@
   api-verification.md          API 核实规程
   pitfalls.md 第一部分         通用坑（个别条目标注适用范围）
   e2e-testing.md               E2E 方法论（服务器安装随 Loader、断言跨环境）
+  debug-mcp.md                 实时调试基建使用指南（协议 debug-mcp/protocol.md，桥接/消费端实现在 debug-mcp/）
 
 第二层 环境知识（environments/，识别环境后按需加载）
   environments/
@@ -48,6 +49,7 @@
 |---|---|---|
 | versions | `environments/versions/1.21.1/vs-1.21.11-mojmap.md` | MC 1.21.1 ↔ 1.21.11，Mojmap（四构建实测；含 1.21.4/1.21.5/1.21.8/1.21.9/1.21.10 中点边界） |
 | versions | `environments/versions/1.21.11/vs-26.x-deobf.md` | MC 1.21.11 ↔ 26.1/26.2/26.3，去混淆化时代（三线实测） |
+| versions | `environments/versions/1.21.11/bridge.md` | MCB 调试桥实现要点，MC 1.21.11 Fabric（编译探针实测；运行时行为待验证） |
 | loaders | `environments/loaders/fabric-vs-neoforge-1.21.x.md` | Fabric ↔ NeoForge，MC 1.21.x，Mojmap |
 
 版本卡覆盖（结构事实级）与缺号说明：见 `environments/versions/README.md` 覆盖表（唯一事实来源）。

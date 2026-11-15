@@ -164,11 +164,13 @@ Project Conventions: …
 - **测试方式跟随目标环境**：先问"这个版本 / Loader / 项目结构的标准验证路径是什么"，再搭测试。服务器安装方式随 Loader 不同（Fabric launcher / NeoForge 与 Forge installer），命令面（RCON、`/execute`、`/data`）是原版能力、与 Loader 无关。
 - 有玩家交互行为的 mod：**专用服务器 + 服务端权威断言**是基线；客户端机器人只做操作、不做状态断言。
 - 建议模组带**启动自检**：服务端启动时跑一次核心数据读写回环，日志输出 `SELF-TEST PASS`——任何版本升级、映射变化都能第一时间暴露数据层问题。
+- **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图。回归测试基线不变，MCB 只补实时性。
 - 测试架构、服务器搭建、断言模式与踩坑（RCON 探针、区块加载、机器人协议）见 `references/e2e-testing.md`。
 
 ## 11. Debugging
 
 - 从日志出发 → 反编译确认内部约束 → 结论落到"文件:行号"。
+- **实时第一现场**：游戏正在跑时优先用 MCB 拿日志与堆栈（`references/debug-mcp.md`），`mc_wait_log` 抓异常关键字比翻文件快；游戏已退出再读 `latest.log` / 崩溃报告。
 - 复杂 bug 派子代理读源码调查，主代理审证据链。
 - "某平台独有 bug"大概率是漏改一处：先 diff 各构建的同源文件，再怀疑逻辑本身。
 - 行为级差异（编译通过但表现错）只有行为测试能暴露——回到 §10。
@@ -185,7 +187,7 @@ Project Conventions: …
 需要跨版本 / 跨 Loader 比较（迁移任务）时，再读取其他环境文件
 ```
 
-- 默认可读（通用方法层）：本文件 + `references/environment-discovery.md` + `references/api-verification.md` + `references/pitfalls.md` 第一部分 + `references/e2e-testing.md`。
+- 默认可读（通用方法层）：本文件 + `references/environment-discovery.md` + `references/api-verification.md` + `references/pitfalls.md` 第一部分 + `references/e2e-testing.md` + `references/debug-mcp.md`（接入实时调试时）+ `references/debug-mcp/protocol.md`（实现/移植桥接时）。
 - 环境知识层（`references/environments/`）：
   - 版本：`versions/<mc版本>/README.md` 版本卡 + `versions/<旧版本>/vs-<新版本>-<映射>.md` 已验证版本对差异。**覆盖清单的唯一事实来源是 `references/environments/versions/README.md` 的覆盖表**（新增版本不需要修改本文件）。
   - Loader：`loaders/<loaderA>-vs-<loaderB>-<版本线>.md`。
