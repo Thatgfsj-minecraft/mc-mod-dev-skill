@@ -1,7 +1,9 @@
 # MCB 调试桥实现要点（MC 1.21.11 · Fabric · Mojmap）
 
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
-> 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。**运行时行为尚未验证**——用到"实测"标签的结论时，先跑通 `references/debug-mcp.md` §5 的五条主路径再采信。
+> 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。
+
+> **运行时状态：11 个 op 已全部实测通过**（见文末"运行时验证记录"）。
 
 ## 协议实现（参考实现位置）
 
@@ -33,4 +35,12 @@
 - **log4j2 core 在 MC 类路径上**：`org.apache.logging.log4j.core.appender.AbstractAppender` 可直接 extends，attach 到 root logger 无需额外依赖声明。`[实测：编译探针]`
 - **桥接端口**：默认 25585，`-Dmcb.port` 覆盖（实现在 `McbMod`）。
 - **`fabric.mod.json` 的 loader 下限别写死成开发时的 loader 版本**：入口只用 `ClientModInitializer`（远古稳定 API），参考实现声明 `fabricloader >=0.16.0` 即可。曾因声明 `>=0.19.0` 而在 Loader 0.18.4 的实例上被 Fabric 直接拒绝加载（报依赖不满足）——构建用的 loader 版本 ≠ 运行时实例的 loader 版本，这是"编译全绿但游戏里根本不出现这个 Mod"的头号原因。`[实测：本机 HMCL 实例 Loader 0.18.4]`
-- **运行时验证清单（待办）**：`ping`/`status`/`block.get`/`log.history`/`command.run` 五条主路径 + 截图，按 `references/debug-mcp.md` §5 执行后把结果回填本文件。
+- **运行时验证记录（2026-11-15，全部通过）**：装进 HMCL 实例 `thatgfsj`（MC 1.21.11 + Loader 0.18.4 + JDK 21）实测 11 个 op：
+  - `hello` → `{protocol:1, loader:"fabric", side:"client", worldLoaded:true}`；`ping` → `pong:true`
+  - `status` → overworld、`timeOfDay`、玩家坐标/gamemode/health 正常
+  - `block.get` → `fabricaeexnihilo:oak_barrel`，方块实体 NBT 正确读出 `state:"compost"` / `recipeProgress` / `compostLevel` / `stack`
+  - `block.scan` → 77 方块；超 4096 体积正确报 `TOO_LARGE`
+  - `map.ascii` → 17×17 字符画 + legend；`entity.list` → 玩家实体；`log.history` → 游标推进正常
+  - `command.run` → `time query gametime` 返回中文 resultText + `feedback` 数组
+  - `screenshot.take` → PNG 1280×683；`log.wait` → 跨连接 `say` 触发后立即匹配（长轮询正常）
+  - 已知偏差：`status.game` 返回 HMCL 实例名而非 MC 版本（`getLaunchedVersion()` 语义），建议改用 `SharedConstants.getCurrentVersion().getName()`
