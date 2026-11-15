@@ -59,7 +59,7 @@ send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
 const tools = await wait(2);
 const names = tools.result.tools.map((t) => t.name);
 console.log("tools:", names.join(", "));
-if (names.length !== 13) throw new Error(`expected 13 tools, got ${names.length}`);
+if (names.length !== 14) throw new Error(`expected 14 tools, got ${names.length}`);
 
 // mc_status against a dead bridge: exact error contract — isError flagged and
 // the precise BRIDGE_UNREACHABLE code (a generic "MCB" match once masked a

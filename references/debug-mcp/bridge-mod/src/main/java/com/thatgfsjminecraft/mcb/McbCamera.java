@@ -44,6 +44,14 @@ public final class McbCamera {
     private static volatile float yaw, pitch;
     /** Projection fov override; <= 0 means "keep vanilla fov behaviour". */
     private static volatile float fov = -1f;
+    /**
+     * Sky-eye UI suppression (user requirement): while a camera op owns the
+     * view, hide the VANILLA HUD clutter (hotbar, hearts, chat, crosshair...)
+     * so screenshots are clean, but keep information overlays from mods
+     * (Jade tooltip, minihud...) — they render through their own hooks and
+     * are NOT affected by GuiMixin. Restored when the camera op ends.
+     */
+    private static volatile boolean uiSuppressed = false;
 
     /** One-shot pipeline: set at request time, cleared at capture time. */
     private static final AtomicBoolean captureQueued = new AtomicBoolean(false);
@@ -60,6 +68,7 @@ public final class McbCamera {
     public static float camPitch() { return pitch; }
     public static boolean hasFovOverride() { return fov > 0f; }
     public static float fovOverride() { return fov; }
+    public static boolean uiSuppressed() { return uiSuppressed; }
 
     /**
      * Called from CameraMixin on the render thread after the camera pose has
@@ -87,6 +96,7 @@ public final class McbCamera {
         captureQueued.set(false);
         active = true;   // persistent stays whatever it was; one-shot wins per-frame
         persistent = false;
+        uiSuppressed = true;
     }
 
     static void setPersistent(double px, double py, double pz, float pYaw, float pPitch, Float pFov) {
@@ -95,6 +105,7 @@ public final class McbCamera {
         fov = pFov == null ? -1f : Math.min(Math.max(pFov, 1f), 360f);
         active = true;
         persistent = true;
+        uiSuppressed = true;
     }
 
     /**
@@ -112,6 +123,7 @@ public final class McbCamera {
         active = false;
         persistent = false;
         fov = -1f;
+        uiSuppressed = false;
     }
 
     /** status.cameraMode — additive field, never null. */
@@ -143,6 +155,7 @@ public final class McbCamera {
         if (!persistent) {
             active = false;
             fov = -1f;
+            uiSuppressed = false;
         }
         if (ok == null || err == null) return;
         JsonObject extra = new JsonObject();

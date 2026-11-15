@@ -77,6 +77,21 @@ const server = net.createServer((socket) => {
         case "camera.clear":
           reply({ active: false, mode: "none" });
           break;
+        case "player.move": {
+          // Strict param shape: flat numeric x/y/z, optional yaw/pitch (§3.13).
+          const q = req.params;
+          if (![q.x, q.y, q.z].every((v) => typeof v === "number")) {
+            fail("BAD_PARAMS", "fake bridge requires flat numeric x/y/z (protocol §3.13)");
+            break;
+          }
+          reply({
+            success: true, moved: true,
+            x: q.x, y: q.y, z: q.z, yaw: q.yaw ?? 0, pitch: q.pitch ?? 0,
+            dimension: "minecraft:overworld",
+            groundWasMissing: true, placedGlass: true, placedGlassVerified: true,
+          });
+          break;
+        }
         default: fail("BAD_OP", `unknown op: ${req.op}`);
       }
     }
@@ -196,6 +211,19 @@ if (camClear.result.isError === true || clearData.active !== false) {
   throw new Error(`mc_camera_clear failed: ${camClear.result.content[0].text.slice(0, 200)}`);
 }
 console.log("camera set/clear round trip ok");
+
+// 6. mc_move_player: flat numeric params + ground-safety fields echoed.
+send({ jsonrpc: "2.0", id: 8, method: "tools/call", params: {
+  name: "mc_move_player", arguments: { x: 24, y: -63, z: 8 } } });
+const moved = await wait(8);
+const moveData = JSON.parse(moved.result.content[0].text);
+if (moved.result.isError === true || moveData.moved !== true) {
+  throw new Error(`mc_move_player failed: ${moved.result.content[0].text.slice(0, 200)}`);
+}
+if (moveData.placedGlass !== true || moveData.placedGlassVerified !== true) {
+  throw new Error(`mc_move_player ground-safety fields missing: ${moved.result.content[0].text.slice(0, 200)}`);
+}
+console.log("mc_move_player ok:", JSON.stringify(moveData));
 
 proc.removeAllListeners("exit");
 proc.kill();

@@ -258,7 +258,38 @@
 退出自由相机，恢复角色视角；同时取消未完成的 `camera.eye`（见上）。
 
 - `status`（§3.2）新增可选字段 `cameraMode`：`"none" | "one-shot" | "persistent"`。
+- **UI 抑制（硬编码行为）**：相机 op 生效期间，桥接端屏蔽**原版 HUD 杂项**（物品栏/血量饥饿/经验、状态效果、聊天+动作栏、Tab 列表、计分板侧栏、Boss 条、字幕、准星、demo/sleep 覆盖层），截图干净；**mod 信息覆盖层（Jade 信息栏、minihud 等）不受影响、照常渲染并跟随虚拟相机**——这是天眼的核心价值。屏幕效果（vignette/传送门等）保留，属于世界观感。相机 op 结束（抓帧完成 / `camera.clear`）自动恢复。
 - 实现要点：姿态覆盖与 FOV 覆盖**必须在渲染线程**完成（Fabric 参考实现走 Mixin：`Camera.setup` TAIL + `GameRenderer.getFov` TAIL）；抓帧复用 §3.11 的像素读取路径，在两帧之间读取仍持有虚拟相机画面的帧缓冲。
+
+### 3.13 `player.move`（带地面安全的传送，v1 后向兼容扩展）
+
+动机（用户硬性规则）：**角色不会飞**。任何传送前必须探测目标下方有没有可站立方块，虚空就先垫玻璃再传——把这条纪律直接做进桥接端，消费端（AI）不可能忘记。
+
+参数：`x`,`y`,`z`（**双精度**，目标脚部位置）；可选 `yaw` / `pitch`（浮点，缺省保持玩家当前视角）。
+
+桥接端硬编码流程：
+
+1. 探测 `(x, y-1, z)`，无则探测 `(x, y-2, z)`（可站立 = 非空气且非流体）。
+2. `(x, y-1, z)` 可站 → 脚部 `y`；仅 `(x, y-2, z)` 可站 → 脚部 `y-1`；都没有 → 先放置 `minecraft:glass` 于 `(x, y-1, z)`（**服务端权威**：走集成服务端 setBlock，客户端 setBlock 会产生幽灵方块），再传到 `y`。
+3. 传送后速度归零、摔落距离清零（`absSnapTo` + `setDeltaMovement(0)` + `resetFallDistance`）。
+4. **垫玻璃失败时不移动玩家**（宁可不动，不许掉虚空），报 `INTERNAL` 并说明。
+
+响应 data：
+
+```json
+{
+  "success": true, "moved": true,
+  "x": 24.0, "y": -63.0, "z": 8.0, "yaw": 0.0, "pitch": 0.0,
+  "dimension": "minecraft:overworld",
+  "groundWasMissing": true, "placedGlass": true, "placedGlassVerified": true
+}
+```
+
+- `y` 是**实际脚部高度**，可能比请求低一格（地面在下方时）。
+- `groundWasMissing`：探测时目标下方无直接可站方块（含"落到低一格"情形）。
+- `placedGlassVerified`：玻璃已确认放置（集成服务端路径 true）。多人世界无集成服务端时降级为发送 `setblock` 命令（需要 OP，无法确认结果，`placedGlassVerified: false`）。
+- 无集成服务端也无连接 → `INTERNAL`；无世界/玩家 → `WORLD_NOT_LOADED`。
+- 世界未加载时玻璃探测读到的都是空气，会按"虚空"处理——集成服务端 setBlock 会强制加载区块，行为安全。
 
 ## 4. 版本化
 

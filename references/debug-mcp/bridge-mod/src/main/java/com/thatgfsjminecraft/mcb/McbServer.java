@@ -495,6 +495,33 @@ final class McbServer {
                     data.addProperty("mode", "none");
                     sendOk(id, data);
                 }
+                case "player.move" -> {
+                    // §3.13 teleport with hardcoded ground safety: probe the
+                    // ground under the target, place glass into the void if
+                    // needed (server authority), THEN move the player. Params
+                    // parsed here for immediate BAD_PARAMS. The glass path is
+                    // async (server thread -> client thread), so the response
+                    // is sent from the callbacks; sendOk's responded-set keeps
+                    // the "exactly one response" guarantee.
+                    double mx = doubleOf(params.get("x"), "x");
+                    double my = doubleOf(params.get("y"), "y");
+                    double mz = doubleOf(params.get("z"), "z");
+                    boolean hasYaw = params.has("yaw") && params.get("yaw").isJsonPrimitive();
+                    boolean hasPitch = params.has("pitch") && params.get("pitch").isJsonPrimitive();
+                    float myaw = hasYaw ? floatOf(params.get("yaw"), "yaw") : 0f;
+                    float mpitch = hasPitch ? floatOf(params.get("pitch"), "pitch") : 0f;
+                    Minecraft.getInstance().execute(() -> {
+                        try {
+                            McbHandlers.playerMove(mx, my, mz, myaw, mpitch, hasYaw, hasPitch,
+                                    data -> sendOk(id, data),
+                                    (code, msg) -> sendError(id, code, msg));
+                        } catch (OpException e) {
+                            sendError(id, e.code, e.getMessage());
+                        } catch (Exception e) {
+                            sendError(id, "INTERNAL", e.getClass().getName() + ": " + e.getMessage());
+                        }
+                    });
+                }
                 default -> sendError(id, "BAD_OP", "unknown op: " + op);
             }
         }

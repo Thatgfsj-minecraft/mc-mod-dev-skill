@@ -217,10 +217,31 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "mc_move_player",
+    {
+      title: "Move the player (safe teleport)",
+      description: "Teleport the player to (x,y,z) with GROUND SAFETY HARDCODED (the player cannot fly): the bridge probes the blocks below the target first; if there is nothing to stand on it places a glass block into the void with server authority BEFORE moving, and zeroes motion + fall distance on arrival. Response reports groundWasMissing / placedGlass so you know what it did. feet Y in the response may be one lower than requested when the actual ground was lower. Use this for interaction; use mc_camera_eye just to LOOK at things.",
+      inputSchema: {
+        x: z.number().describe("target X (feet position)"),
+        y: z.number().describe("target Y (feet position; auto-adjusted down if ground is one block lower, glass auto-placed if void)"),
+        z: z.number().describe("target Z (feet position)"),
+        yaw: z.number().optional().describe("yaw after tp in degrees, 0=south(+Z); omit to keep current"),
+        pitch: z.number().optional().describe("pitch after tp in degrees, 90=down; omit to keep current"),
+      },
+    },
+    wrap(async (args: any) => {
+      const params: Record<string, any> = { x: args.x, y: args.y, z: args.z };
+      if (args.yaw !== undefined) params.yaw = args.yaw;
+      if (args.pitch !== undefined) params.pitch = args.pitch;
+      return bridge.request("player.move", params, 15000);
+    }),
+  );
+
+  server.registerTool(
     "mc_camera_eye",
     {
       title: "Sky-eye one-shot screenshot",
-      description: "Render ONE frame from an arbitrary virtual camera (position + yaw/pitch + optional fov) WITHOUT teleporting the player, capture it as PNG and restore the player view. Use this instead of tp+screenshot: the player does not move, nothing falls, and Jade-style crosshair tooltips follow the virtual camera. Returns pose + chunks info: chunks.centerLoaded=false or low chunks.loadedNearby means the camera is outside loaded chunks — run mc_command 'forceload add <cx> <cz>' around that spot first, then shoot again.",
+      description: "Render ONE frame from an arbitrary virtual camera (position + yaw/pitch + optional fov) WITHOUT teleporting the player, capture it as PNG and restore the player view. Vanilla HUD (hotbar/hearts/chat/crosshair...) is auto-hidden during the shot for a clean image, but mod info overlays (Jade tooltip, minihud...) STAY — the Jade tooltip follows the virtual camera. Returns pose + chunks info: chunks.centerLoaded=false or low chunks.loadedNearby means the camera is outside loaded chunks — run mc_command 'forceload add <cx> <cz>' around that spot first, then shoot again.",
       inputSchema: {
         x: z.number().describe("camera eye X (double, e.g. 24.5)"),
         y: z.number().describe("camera eye Y"),
@@ -259,7 +280,7 @@ export function registerTools(server: McpServer): void {
     "mc_camera_set",
     {
       title: "Enter persistent free camera",
-      description: "Lock the render camera to a virtual pose PERSISTENTLY (every frame until mc_camera_clear). The player stays where they are. Combine with mc_screenshot for multiple viewpoints-free shots, and Jade tooltips follow this camera. Restore the player view with mc_camera_clear when done.",
+      description: "Lock the render camera to a virtual pose PERSISTENTLY (every frame until mc_camera_clear). The player stays where they are. Vanilla HUD clutter is auto-hidden while the free camera is active, but mod info overlays (Jade tooltip, minihud...) STAY and follow the camera — ideal for inspecting blocks with Jade from any angle via mc_screenshot. Restore the player view with mc_camera_clear when done.",
       inputSchema: {
         x: z.number().describe("camera eye X"),
         y: z.number().describe("camera eye Y"),

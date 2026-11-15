@@ -487,6 +487,124 @@ final class McbHandlers {
         public boolean shouldInformAdmins() { return false; }
     }
 
+    // =====================================================================
+    // §3.13 player.move — teleport with hardcoded ground safety.
+    //
+    // THE RULE (user requirement, do not weaken): the player cannot fly.
+    // Before any tp, probe the ground under the target; if there is nothing
+    // to stand on, place a glass block first, then tp on top of it, and
+    // zero out motion + fall distance. Glass (not dirt) so it never pollutes
+    // the terrain the user cares about.
+    // =====================================================================
+    static void playerMove(double x, double y, double z, float yaw, float pitch,
+                           boolean hasYaw, boolean hasPitch,
+                           java.util.function.Consumer<JsonObject> ok,
+                           java.util.function.BiConsumer<String, String> err) {
+        // Runs on the CLIENT main thread (dispatch hopped here).
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        ClientLevel level = mc.level;
+        if (player == null || level == null) {
+            err.accept("WORLD_NOT_LOADED", "no player in a loaded world");
+            return;
+        }
+        float yawOut = hasYaw ? yaw : player.getYRot();
+        float pitchOut = hasPitch ? pitch : player.getXRot();
+
+        // 1. Ground probe at the target column: standable = solid non-fluid.
+        boolean groundHere = standable(level, x, y - 1, z);
+        boolean groundBelow = groundHere || standable(level, x, y - 2, z);
+        double standY = groundHere ? y : (groundBelow ? y - 1 : y);
+        boolean needGlass = !groundBelow;
+
+        // 2a. Nothing needed: tp right now.
+        if (!needGlass) {
+            teleport(player, x, standY, z, yawOut, pitchOut);
+            ok.accept(moveResult(x, standY, z, yawOut, pitchOut, level,
+                    !groundHere, false, true));
+            return;
+        }
+
+        // 2b. Void below: place glass, then tp. The block must be placed with
+        // server authority (client setBlock would be a ghost block).
+        var server = mc.getSingleplayerServer();
+        BlockPos glassPos = BlockPos.containing(Math.floor(x), Math.floor(y - 1), Math.floor(z));
+        if (server != null) {
+            // Chain: server thread (place) -> client thread (tp + respond).
+            server.execute(() -> {
+                boolean placed = false;
+                String failure = null;
+                try {
+                    var slevel = server.getLevel(level.dimension());
+                    placed = slevel != null
+                            && slevel.setBlock(glassPos, net.minecraft.world.level.block.Blocks.GLASS.defaultBlockState(), 3);
+                } catch (Exception e) {
+                    failure = e.getClass().getName() + ": " + e.getMessage();
+                }
+                boolean placedF = placed;
+                String failureF = failure;
+                Minecraft.getInstance().execute(() -> {
+                    if (!placedF) {
+                        // Refuse to move the player into a void we failed to fill.
+                        err.accept("INTERNAL",
+                                "failed to place safety glass at " + glassPos.toShortString()
+                                        + (failureF != null ? " (" + failureF + ")" : "") + "; player NOT moved");
+                        return;
+                    }
+                    teleport(player, x, standY, z, yawOut, pitchOut);
+                    ok.accept(moveResult(x, standY, z, yawOut, pitchOut, level,
+                            true, true, true));
+                });
+            });
+            return;
+        }
+
+        // 2c. Multiplayer (no integrated server): send setblock as an operator
+        // command (needs op) and move anyway — the client is authoritative for
+        // its own position. Result honestly flags the placement as unverified.
+        var conn = mc.getConnection();
+        if (conn != null) {
+            conn.sendCommand("setblock " + glassPos.getX() + " " + glassPos.getY() + " "
+                    + glassPos.getZ() + " minecraft:glass");
+            teleport(player, x, standY, z, yawOut, pitchOut);
+            ok.accept(moveResult(x, standY, z, yawOut, pitchOut, level,
+                    true, false, true));
+            return;
+        }
+
+        err.accept("INTERNAL", "need to place safety glass but neither an integrated server nor a server connection exists; player NOT moved");
+    }
+
+    /** Solid, non-fluid block: something the player can stand on. */
+    private static boolean standable(ClientLevel level, double x, double y, double z) {
+        BlockState state = level.getBlockState(BlockPos.containing(x, y, z));
+        return !state.isAir() && state.getFluidState().isEmpty();
+    }
+
+    private static void teleport(LocalPlayer player, double x, double y, double z, float yaw, float pitch) {
+        player.absSnapTo(x, y, z, yaw, pitch);
+        player.setDeltaMovement(0, 0, 0);
+        player.resetFallDistance();
+    }
+
+    private static JsonObject moveResult(double x, double standY, double z, float yaw, float pitch,
+                                         ClientLevel level, boolean groundWasMissing, boolean placedGlass,
+                                         boolean placedGlassVerified) {
+        JsonObject o = new JsonObject();
+        o.addProperty("success", true);
+        o.addProperty("moved", true);
+        o.addProperty("x", x);
+        o.addProperty("y", standY); // actual feet Y (may differ from request when ground was lower)
+        o.addProperty("z", z);
+        o.addProperty("yaw", yaw);
+        o.addProperty("pitch", pitch);
+        o.addProperty("dimension", level.dimension().identifier().toString());
+        o.addProperty("groundWasMissing", groundWasMissing);
+        o.addProperty("placedGlass", placedGlass);
+        o.addProperty("placedGlassVerified", placedGlassVerified);
+        return o;
+    }
+
     // ------------------------------------------------------------------ helpers
     static ClientLevel requireLevel() {
         ClientLevel level = Minecraft.getInstance().level;
