@@ -62,3 +62,57 @@ AI agent（你）
 2. 按 SKILL.md §7 对清单逐个核实 API，实现桥接（传输层基本原样搬，世界 API 按目标映射重写）。
 3. 验证：编译通过 + 行为测试（至少覆盖 `ping`/`status`/`block.get`/`log.history`/`command.run` 五条主路径）。
 4. 按 `references/README.md` 沉淀：目标版本卡目录新建 `bridge.md`（写明验证方式），更新覆盖表，实现放进 `debug-mcp/bridge-mod-<loader>-<版本>/`。
+
+## 6. 实战剧本（怎么把工具串成调试闭环）
+
+以下是真实调试中验证有效的调用序列。工具名以参考实现（15 个 `mc_*` 工具）为准，其他实现按协议 op 对应。
+
+### 6.1 搭场景 → 看结果
+
+```
+mc_command("setblock x y z minecraft:glass")   # 造环境（服务端权威，避免幽灵方块）
+mc_scan_blocks({min,max,filter})               # 确认方块真的到位
+mc_camera_look({x,y,z, lookAt:[tx,ty,tz]})     # 镜头对准它，拿到 id/属性/NBT
+mc_camera_eye({x,y,z, yaw, pitch})             # 需要看外观/渲染时才截图
+```
+
+**要点**：`camera.look` 比截图便宜得多，能回答"这是什么东西、状态如何"；只有当问题涉及**渲染外观**（贴图、颜色、UI 叠加）时才值得花 token 截图。
+
+### 6.2 角色交互类任务
+
+```
+mc_move_player({x,y,z})                        # 探地 + 垫玻璃 + 传送，全部硬编码
+mc_command("...")                              # 在安全位置执行交互
+mc_camera_eye({...})                           # 旁观效果，不动角色
+```
+
+**要点**：需要"放置/破坏/交互"才移动角色；只为了"看"就用天眼。移动后如果发现角色状态被污染（半血、坠落中），先 `mc_status` 查 `player` 字段。
+
+### 6.3 排查"渲染不对"类问题
+
+```
+mc_camera_look({x,y,z, lookAt:[tx,ty,tz]})     # 1. 先确认目标方块的状态（数据层）
+mc_camera_eye({x,y,z, yaw, pitch})              # 2. 再看画面（渲染层）
+```
+
+**要点**：数据层与渲染层分开看——如果 `camera.look` 返回的状态是对的但画面不对，那是渲染/客户端同步问题；反之则是方块实体逻辑问题。这个二分法能省掉大量盲目重试。
+
+### 6.4 观察自动化流程（漏斗/熔炉/坩埚循环）
+
+```
+mc_camera_set({x,y,z, yaw, pitch, fov})        # 持久模式，每帧覆盖姿态
+mc_screenshot({})                              # 多次取景，不同角度/距离
+mc_camera_clear({})                            # 用完恢复
+```
+
+**要点**：持久模式比反复 `camera.eye` 更省——一次布好机位，连拍多张对比。`camera.clear` 必须调用，否则视角一直是虚拟相机（`status.cameraMode` 会显示 `persistent`，可用来确认状态）。
+
+### 6.5 常见异常与对策
+
+| 现象 | 原因 | 对策 |
+|---|---|---|
+| 天眼截图是纯黑/虚空 | 相机处区块未加载 | 看 `chunks.centerLoaded`；`mc_command` 跑 `forceload add <cx> <cz>` 后重拍 |
+| 截图带物品栏/血条 | 抓帧时 UI 抑制已撤销（时序问题） | 属桥接端 bug；确认相机覆盖是否活到像素读完 |
+| 改了 JAR 但游戏里没生效 | 游戏运行中不能替换 JAR | 退出游戏 → 替换 `mods/*.jar` → 重启 |
+| `mc_command` 报权限错 | 单人世界外无 OP | 确认实例是单人/作弊模式；命令需四级权限 |
+| 工具报 `BRIDGE_UNREACHABLE` | 游戏没开或端口不对 | `mc_status` 探测；端口默认 25585（`-Dmcb.port=` 改） |
