@@ -1,7 +1,7 @@
 # mc-debug-mcp — MCB v1 消费端参考实现
 
 > 环境无关：只认 [MCB v1 协议](../protocol.md)，不知道对面是 Fabric 还是 NeoForge。
-> 验证方式：`npm run build` + `node smoke.mjs`（离线契约）+ `node integration.mjs`（假桥透传）；运行时联调记录在版本卡 `bridge.md`。
+> 验证方式：`npm run build` + `node smoke.mjs`（离线契约）+ `node integration.mjs`（假桥透传）；运行时联调记录在版本卡 `bridge.md`。2026-11-17 已对 bridge-mod 0.5.0 真机跑通 `MCB_LIVE=1` 的 smoke / integration（含 `mc_world_create → mc_status → mc_world_delete` 世界闭环）。
 
 ## 快速开始
 
