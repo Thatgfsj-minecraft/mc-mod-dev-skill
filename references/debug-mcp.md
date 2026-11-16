@@ -19,20 +19,20 @@ AI agent（你）
 - 桥接 Mod 模板：`debug-mcp/bridge-mod/` —— Fabric 1.21.11 参考实现 + [PORTING.md](debug-mcp/bridge-mod/PORTING.md) 移植指南
 - MCP Server：`debug-mcp/mcp-server/` —— TypeScript 参考消费端，工具与 op 一一对应
 
-设计原则：**不针对任何具体模组**。桥接只做五件事——读世界、抓日志、跑命令、截图、查询/控制客户端状态（屏幕/焦点/资源重载）；一切编解码/游标/重连逻辑都在消费端。
+设计原则：**不针对任何具体模组**。桥接只做六件事——读世界、抓日志、跑命令、截图、查询/控制客户端状态（屏幕/焦点/资源重载）、规则驱动观察（watch 会话：t0 基准 → 规则触发 → t1 报告）；一切编解码/游标/重连逻辑都在消费端。
 
 ## 2. 什么时候用
 
 | 场景 | 用法 |
 |---|---|
 | 开发循环里的行为验证（SKILL.md §10 的增强） | `mc_command` 搭场景 → `mc_wait_log` 等结果日志 → `mc_logs` 拉增量 → `mc_map` / `mc_scan_blocks` 看世界变化 |
+| 有观察窗口的实验（爆炸半径/连锁反应/实体伤害） | `mc_watch_start` 声明规则（after_seconds / settle_quiet / on_condition / interval）→ 一次 `mc_watch_await` 拿回 t0→t1 的 summary_diff / timeline_events / snapshot 报告；不要手动 sleep + 反复 scan |
 | "编译过了但表现不对"（SKILL.md §11 的第一现场） | `mc_logs(levelMin=ERROR)` 直接看堆栈；`mc_wait_log` 抓异常关键字 |
 | 让 AI 建立空间感 | `mc_map` 俯视图 + legend；大区域先 `mc_scan_blocks` 过滤关键方块，再 `mc_block_get` 精查 |
 | 开发循环里的分级热迭代（`fast-iteration.md`） | 数据包 `mc_command({command:"reload"})`；资源 `mc_reload_resources` → `mc_logs` 搜缺失 → `mc_client_screenshot` 验收 |
 | 游戏"卡住" / 画面被挡 | `mc_screen_current` 看 `screen_class` / `window_focused` / `pause_on_lost_focus`，不花 token 读图 |
 | GUI / 视觉类模组 | `mc_screenshot` 内联看画面；要留档/前后对比用 `mc_client_screenshot` 落盘 |
 | 模组自检（§10 的启动自检） | 桥接从进程启动就抓日志，游戏启动期的错误也能回看 |
-| 兼容性测试需要原版失焦暂停 | `mc_pause_on_lost_focus({enabled:true})` 临时恢复，测完切回 `false` |
 | 多人世界 / 无集成服务端的客户端命令 | `mc_command({command, side:"client"})`（无回显，`returnValue:null`） |
 
 **边界**：MCB 是单人开发工具（客户端桥接 + 集成服务端命令）。E2E 断言基线仍然是专用服务器 + 服务端权威断言（`e2e-testing.md`）——MCB 补的是"实时看 + 实时操作"，不是替代回归测试。
@@ -63,6 +63,7 @@ AI agent（你）
 11. **验收截图用落盘版**——`mc_screenshot` 内联 base64 适合"看一眼"；`mc_client_screenshot` 写到 `<gameDir>/screenshots/` 并返回绝对路径与字节数，适合跨步骤前后对比、事后留档。
 12. **资源类改动走 L2 闭环**——`mc_reload_resources` 返回 `{reloaded,duration_ms}` 后**必须** `mc_logs` 搜缺失/加载错误，再截图；不要用按键注入模拟 F3+T（窗口焦点不可靠）。
 13. **`command.run` 的 `side` 要显式**——集成服断言用 `side:"server"`（可拿 `returnValue`/反馈）；多人世界客户端命令用 `side:"client"`（无回显，`resultText:""`、`returnValue:null`）；不要假设 `auto` 一定走服务端。
+14. **有观察窗口的实验用 watch 会话，不要手动 sleep 轮询**——`mc_watch_start` 先拍 t0 基准并声明 `upload_rule`，命中后一次 `mc_watch_await` 拿回结论；`next_seq` **逐份前进**（interval/repeat 的多份报告不会漏），`matched:false` 是正常超时；`auto_stop` 后报告保留 60s，过期才 `WATCH_NOT_FOUND`。`mc_watch_stop` 只有创建会话的连接能调；参考 Fabric 客户端桥接仅集成服可用（多人世界回 `WORLD_NOT_LOADED`）。规则/报告模式/字段见协议 §7。
 
 ## 5. 为新环境写桥接（扩展流程）
 
@@ -70,10 +71,11 @@ AI agent（你）
 2. 按 SKILL.md §7 对清单逐个核实 API，实现桥接（传输层基本原样搬，世界 API 按目标映射重写）。
 3. 验证：编译通过 + 行为测试（至少覆盖 `ping`/`status`/`block.get`/`log.history`/`command.run` 五条主路径）。
 4. 按 `references/README.md` 沉淀：目标版本卡目录新建 `bridge.md`（写明验证方式），更新覆盖表，实现放进 `debug-mcp/bridge-mod-<loader>-<版本>/`。
+5. watch（§7）需要**服务端 tick 泵**（集成服 `server.execute` / 专用服 `ServerTickEvents.END_SERVER_TICK`）与区块 `isLoaded` 保护；桥接端只能在服务端主线程采样/评估/生成报告。客户端桥接只在集成服可用，专用服务端实现更自然。
 
 ## 6. 实战剧本（怎么把工具串成调试闭环）
 
-以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.1，bridge-mod 0.2.1，共 19 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
+以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.2，bridge-mod 0.3.0，共 24 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
 
 ### 6.1 搭场景 → 看结果
 
@@ -159,7 +161,45 @@ mc_logs({ levelMin: "ERROR" })                        # 6. 画面异常时拉堆
 
 > 结论：**防 PauseScreen 要在它出现之前**（`run/options.txt` 预置 + 桥接启动强制关，见 `e2e-testing.md`「客户端 run 目录预置」），出现之后只能人工处理。
 
-### 6.7 常见异常与对策
+### 6.7 规则驱动观察（watch）——爆炸 / 连锁反应 / 实体状态
+
+有观察窗口的实验（爆炸、连锁破坏、机器流水线、实体 AI/伤害）用 watch 会话，一次拿结论：
+
+```text
+mc_watch_start({
+  watch_id: "explosion_test_01",
+  min: [-15, 55, -15], max: [15, 85, 15], origin: [0, 64, 0],
+  tracks: { blocks: { enabled: true }, entities: { enabled: true } },
+  upload_rule: { type: "after_seconds", seconds: 3.0, auto_stop: true },
+  report_mode: "summary_diff", detail_limit: 10
+})                                                     # → t0 基准 + seq:0
+mc_command({ command: "summon minecraft:tnt 0 64 0 {fuse:10}" })   # 1.21.x 的 TNT 引信 NBT 是 fuse
+mc_watch_await({ watch_id: "explosion_test_01", after_seq: 0, wait_ms: 15000 })
+                                                       # → matched + report（total_changed / affected_bounds / radius / transitions / entity impacts）
+mc_watch_stop({ watch_id: "explosion_test_01" })        # 只有 owner 能停；auto_stop 已关时返回 WATCH_NOT_FOUND
+```
+
+**规则类型速查**（完整字段见协议 §7.2）：
+
+| upload_rule.type | 何时上传 | 典型场景 |
+|---|---|---|
+| `after_seconds` / `after_ticks` | 从 start 起固定等待后拍终态 | 爆炸范围、定时药水、红石延时 |
+| `settle_quiet` | 区域内连续 N tick 无变化后结算（或 max_wait 兜底） | 未知耗时的连锁反应、水流/岩浆蔓延 |
+| `on_condition` | block_match / block_state / entity_removed / entity_hp_below 首次满足 | 核心方块被破坏、机器 lit=true、Boss/测试假人死亡、血量阈值 |
+| `interval` | 每 N tick 上报自上次以来的增量 | 机器流水线、持续路径追踪 |
+| `event` | 首条匹配日志（`log.line` + 可选正则） | 与命令回执/日志联动的复合测试 |
+| `any` / `all` / `sequence` / `repeat` | 组合（嵌套 ≤4、节点 ≤16） | “先炸再等 3s，总超时 15s”；多条件与；周期产出 |
+
+**报告模式**：`summary_diff`（默认，t0 vs t1 汇总）、`timeline_events`（带 tick 的因果顺序）、`snapshot`（触发时刻的过滤后列表）；明细受 `detail_limit` 限制，截断时置 `truncated:true` + `truncated_count`。
+
+**纪律**：
+
+- 一次只等一个结论：`next_seq` 逐份前进；不要用固定 sleep 猜时间。
+- `interval` / `repeat` 默认 `auto_stop:false`，不用时 `mc_watch_stop`（owner）或依赖 300s 空闲回收；活跃会话上限 8，区域体积上限 32768 格。
+- 报告只给“结论”：明细长度受 `detail_limit`（默认 20，上限 200）限制；需要逐条排查时才把 `report_mode` 换成 `timeline_events` 并调大 `detail_limit`。
+- 只信服务端：参考客户端桥接在集成服主线程采样，多人世界回 `WORLD_NOT_LOADED`；需要专用服务端支持时按协议 §7 实现。
+
+### 6.8 常见异常与对策
 
 | 现象 | 原因 | 对策 |
 |---|---|---|
@@ -176,3 +216,8 @@ mc_logs({ levelMin: "ERROR" })                        # 6. 画面异常时拉堆
 | `mc_reload_resources` 返回 `TIMEOUT` | 资源包大 / 着色器编译慢（30s 看门狗） | 拆小资源包或接受更长耗时；**仍要** `mc_logs` 搜加载错误后再截图 |
 | 改了资源包 F3+T 没变化 | 资源没同步进运行 classpath | 先 `./gradlew processResources` 再重载（`fast-iteration.md` 规则 1） |
 | `mc_pause_on_lost_focus({enabled:true})` 后画面仍是暂停菜单 | 已打开的 Screen 不会因改选项而关闭 | 该设置只影响**之后**的失焦暂停行为；需要人工关屏后再继续 |
+| `[MCB BAD_OP] unknown op: watch.start` | 桥接端 < 0.3.0，不认识 §7 watch op | 升级 bridge-mod 到 0.3.0+；旧桥下降级为 `mc_scan_blocks` / `mc_entities` + 自行对比 |
+| `[MCB WATCH_NOT_FOUND]` | watch_id 拼错 / 已 auto_stop 且超过 60s 保留期 / 已被清理 | 用 `mc_watch_list` 看活跃会话；重新 `mc_watch_start` |
+| `[MCB RULE_INVALID]` | 规则树深度 >4 / 节点 >16 / 未知 type / 缺必填 / 正则非法 / 非 log.line 事件源 | 按协议 §7.2 修 `upload_rule`；先用最小规则验证 |
+| `[MCB TOO_LARGE] ... watch session limit reached` | 活跃 watch 会话已达 8 个 | `mc_watch_list` 挑无用会话 `mc_watch_stop`（owner）后再建 |
+| watch 工具回 `[MCB WORLD_NOT_LOADED]` | 多人世界 / 主菜单：参考客户端桥接只在集成服采样 | 单人存档测试，或按协议 §7 为专用服务端实现 watch |

@@ -17,29 +17,29 @@
 
 | 文件 | 行数级（≈） | 对应协议章节 | 职责 |
 |---|---|---|---|
-| `McbMod.java` | 67 | §1 / v0.5.1 失焦保活 | 入口：装日志捕获、开 TCP 服务端、解析端口、**登记失焦保活**（`McbClientOps.scheduleFocusKeepAlive()`；首个 client tick 应用，见下） |
+| `McbMod.java` | 75 | §1 / v0.5.1 失焦保活 | 入口：装日志捕获、开 TCP 服务端、解析端口、启动 WatchEngine、**登记失焦保活**（`McbClientOps.scheduleFocusKeepAlive()`；首个 client tick 应用，见下） |
 | `McbLogCapture.java` | 220 | §3.7 / §3.8 / §2.3(log) | log4j2 Appender + 环形缓冲 + 增量读 + 订阅广播 |
-| `McbServer.java` | 900 | §1 / §2 / §3 / §7 分发 | TCP accept / NDJSON 读写 / 主线程跳转 / 响应唯一性 / 看门狗；`command.run` 的 `side` 路由；`watch.*` 参数校验与 owner token；`broadcastEvent` |
+| `McbServer.java` | 898 | §1 / §2 / §3 / §7 分发 | TCP accept / NDJSON 读写 / 主线程跳转 / 响应唯一性 / 看门狗；`command.run` 的 `side` 路由；`watch.*` 参数校验与 owner token；`broadcastEvent` |
 | `McbHandlers.java` | 740 | §3.2–§3.6 / §3.9 / §3.10 | 世界状态读取与**服务端路径**命令执行（全部假设在游戏主线程 / 服务端线程） |
 | `WatchSnapshot.java` | 846 | §7.1 / §7.3 / §7.10 | 服务端主线程采样与 diff：方块/实体快照、区块保护、filter/type_filter 匹配、三种报告段 JSON |
 | `WatchRules.java` | 896 | §7.2 | 规则树解析/强校验/逐 tick 状态机（5 基础 + any/all/sequence/repeat + 超时兜底） |
-| `WatchSession.java` | 785 | §7.1 / §7.3 / §7.4 / §7.9 | 会话配置、t0、采样节奏、报告缓冲/await、auto_stop/保留期、final_report |
+| `WatchSession.java` | 792 | §7.1 / §7.3 / §7.4 / §7.9 | 会话配置、t0、采样节奏、报告缓冲/await、auto_stop/保留期、final_report |
 | `WatchEngine.java` | 482 | §7.4–§7.9 | 全局注册表、tick 泵、生命周期回收、事件广播 |
 | `McbClientOps.java` | 390 | §3.15–§3.18 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；以及失焦暂停守卫标志 `autoPauseGuard()` |
 | `McbScreenshot.java` | 147 | §3.11 / §3.16 | PNG 编码：§3.11 内联 base64；§3.16 `captureToFile` 帧末抓帧 → IO 线程写盘（渲染线程只读像素） |
 | `McbCamera.java` | 230 | §3.12 / §3.14 | 天眼自由相机：姿态/FOV 覆盖、UI 抑制、相机射线 `camera.look` |
 | `mixin/CameraMixin.java` | 46 | §3.12 | `Camera.setup` TAIL 覆盖姿态 |
-| `mixin/GameRendererMixin.java` | 120 | v0.5.1 失焦保活 / §3.12 / §3.16 | FOV 覆盖（`getFov` TAIL）、第一人称手屏蔽、**帧末抓帧注入 + 失焦开关每帧校正**（`onFrameEnd`；**不用 `@Redirect`**，原因见红线 7） |
+| `mixin/GameRendererMixin.java` | 120 | v0.5.1 失焦保活 / §3.12 / §3.16 | FOV 覆盖（`getFov` TAIL）、第一人称手屏蔽、**帧末抓帧注入 + 失焦开关每帧校正**（`onFrameEnd`；**不用 `Redirect`**，原因见红线 7） |
 | `mixin/GuiMixin.java` | 58 | §3.12 | 天眼期间按元素屏蔽原版 HUD |
 
-> 行数为量级（v0.5.1 结构调整后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
+> 行数为量级（v0.5.2 watch 落地后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
 
 ## 失焦保活（v0.5.1，为什么这样改）
 
 自动化场景里游戏窗口经常**失去焦点**（远程串流、alt-tab、X11 注入）。原版在失焦 500ms 后自动暂停，世界冻结、所有 op 变慢或超时、截图全是 PauseScreen——这不是"偶发 bug"，而是自动化环境的常态。桥接端从两个层面解决：
 
 1. **上游开关**：`McbMod.onInitializeClient()` 末尾调用 `McbClientOps.scheduleFocusKeepAlive()`，把 `options.pauseOnLostFocus` 置 `false` 并 `options.save()`（已是 false 则不写盘）；整段包在 try/catch 里——开发工具不许因初始化失败炸客户端。**为什么延迟到首个 client tick**：fabric-loader 0.19.5 的 `EntrypointPatch` 在 `>=1.19.4` 时把 `startClient` 钩子注入到 `Minecraft.<init>` 内、`Thread.currentThread()` 调用之前（源码 `patch/EntrypointPatch.java:549-552`；`Hooks.startClient` 在此调用 `ClientModInitializer.onInitializeClient`），而 1.21.11 `Minecraft.<init>` 里 `this.gameThread = Thread.currentThread()`（`Minecraft.java:438`）早于 `this.options = new Options(...)`（`:439`）——入口处 `options` 可能还是 null。实现用 `Minecraft.execute()` 排队 + 最多 20 tick 重试（带日志），首个 `runTick` 在任何一帧渲染前执行完。`[实测：反编译 fabric-loader 0.19.5 sources + 1.21.11 Minecraft.<init> 顺序]`
-2. **运行期校正（不用 Mixin 拦调用点）**：`GameRendererMixin` 的帧末 `@Inject` 每帧调用 `McbClientOps.enforceFocusKeepAlive()`：guard 开启期间若 `pauseOnLostFocus` 被改回 `true`（F3+P / 选项重载 / 其他 Mod），当帧掰回 `false`。为什么不用 `@Redirect` 拦失焦调用点：`@Redirect.at()` 的注解编码在 sponge-mixin 0.17.0（单值 `At`）与 0.17.4（`At[]`）之间不同，0.2.0 曾因此启动崩溃（`ClassCastException: ArrayList cannot be cast to AnnotationNode`），而 `@Inject.at()` 两版都是 `At[]`——模板必须跨 Loader 版本可用，所以只用 `@Inject`（详见 `pitfalls.md` E5、红线 7）。
+2. **运行期校正（不用 Mixin 拦调用点）**：`GameRendererMixin` 的帧末 `Inject` 每帧调用 `McbClientOps.enforceFocusKeepAlive()`：guard 开启期间若 `pauseOnLostFocus` 被改回 `true`（F3+P / 选项重载 / 其他 Mod），当帧掰回 `false`。为什么不用 `Redirect` 拦失焦调用点：`Redirect.at()` 的注解编码在 sponge-mixin 0.17.0（单值 `At`）与 0.17.4（`At[]`）之间不同，0.2.0 曾因此启动崩溃（`ClassCastException: ArrayList cannot be cast to AnnotationNode`），而 `Inject.at()` 两版都是 `At[]`——模板必须跨 Loader 版本可用，所以只用 `Inject`（详见 `pitfalls.md` E5、红线 7）。
 3. **运行时可控**：`client.pause_on_lost_focus`（§3.17）可读写该开关并联动 guard——要做"原版会暂停"的兼容性测试时不必重启游戏。
 
 **红线：不动 ESC 路径。** 1.21.11 的 `KeyboardHandler` 里普通 ESC 也调用 `pauseGame(false)`；用 Mixin 全局取消 `pauseGame(boolean)` 会让 ESC 暂停菜单一起消失（详见红线 5 与版本卡）。
@@ -76,7 +76,7 @@
 |---|---|---|
 | `WatchSnapshot.java` | 846 | §7 采样与 diff：`Sample` 用并行 `long[] keys` + `BlockState[]`（单会话 ≤32768 格，无逐方块对象）；未加载区块整列跳过并记 `truncated_chunks`；实体 UUID 主键 + runtimeId 辅助判定 `out_of_bounds`；`summary_diff` / `timeline_events` / `snapshot` 三种报告段 JSON |
 | `WatchRules.java` | 896 | §7.2 规则树：5 基础规则 + `any/all/sequence/repeat`；深度 ≤4、节点 ≤16、序列化 ≤16 KiB、参数范围/正则/事件源强校验（`RULE_INVALID`）；逐 tick 状态机（latched/simultaneous、sequence 激活、repeat 轮次、超时兜底） |
-| `WatchSession.java` | 785 | 会话配置与参数校验（IO 线程）；t0 基准；逐 tick/按需采样节奏；报告缓冲（≤64、seq、overflowed）；`watch.await` wait/notify；auto_stop/保留期；`watch.list` 元数据；`final_report` |
+| `WatchSession.java` | 792 | 会话配置与参数校验（IO 线程）；t0 基准；逐 tick/按需采样节奏；报告缓冲（≤64、seq、overflowed）；`watch.await` wait/notify；auto_stop/保留期；`watch.list` 元数据；`final_report` |
 | `WatchEngine.java` | 482 | 全局注册表（活跃 ≤8；关闭但保留报告的会话仍可 await）、daemon tick 泵（轮询 `getSingleplayerServer().getTickCount()` → `server.execute(...)`）、维度卸载/服务器切换/连接断开 60s/interval·repeat 空闲 300s 回收、`watch.triggered`/`watch.stopped` best-effort 广播 |
 
 ### 线程纪律（实现要点）
@@ -129,4 +129,4 @@ cd references/debug-mcp/bridge-mod
 7. **watch 采样必须服务端线程**——`WatchSnapshot.capture` / 规则评估 / 报告生成只允许出现在 `server.execute(...)` 回调；IO 线程读世界 = 随机崩溃且可能强制加载区块。
 8. **禁止强制加载区块**——采样/条件读方块前必须先 `Level.isLoaded(pos)`；`Level.getBlockState` 会走 `getChunk(...)`。
 9. **`watch.await` / 事件推送不得阻塞游戏线程**——await 只在 `LOG_WAIT_POOL` 线程等 session monitor；事件只做非阻塞 `offer`，满则丢并计入 `droppedEvents`。
-10. **Mixin 选择 + 注解版本陷阱**——本参考实现只用原版 Mixin 的 `@Inject`（`@Inject.at()` 在 sponge-mixin 0.17.0 / 0.17.4 都是 `At[]`，跨 Loader 版本稳定）；**不要用 `@Redirect`**：它的 `at()` 在 0.17.0 是单值、0.17.4 是 `At[]`，编译端与运行端 Mixin 版本不一致时注解编码对不上，MixinExtras `preApply` 会抛 `ClassCastException: ArrayList cannot be cast to AnnotationNode` 导致启动崩溃（0.2.0 真实事故）。正式模组优先 MixinExtras 的 `@WrapOperation` / `@ModifyExpressionValue`（并且同样要核对运行时 Mixin 版本）。引用 `Options` / `Screen` 的 Mixin 必须放 `mcb.mixins.json` 的 `client` 数组。
+10. **Mixin 选择 + 注解版本陷阱**——本参考实现只用原版 Mixin 的 `Inject`（`Inject.at()` 在 sponge-mixin 0.17.0 / 0.17.4 都是 `At[]`，跨 Loader 版本稳定）；**不要用 `Redirect`**：它的 `at()` 在 0.17.0 是单值、0.17.4 是 `At[]`，编译端与运行端 Mixin 版本不一致时注解编码对不上，MixinExtras `preApply` 会抛 `ClassCastException: ArrayList cannot be cast to AnnotationNode` 导致启动崩溃（0.2.0 真实事故）。正式模组优先 MixinExtras 的 `WrapOperation` / `ModifyExpressionValue`（并且同样要核对运行时 Mixin 版本）。引用 `Options` / `Screen` 的 Mixin 必须放 `mcb.mixins.json` 的 `client` 数组。

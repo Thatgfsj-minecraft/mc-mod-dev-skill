@@ -3,7 +3,7 @@
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
 > 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）同样是**编译探针 + javap 核实，运行时待验证**（见"watch 扩展 API 事实"与文末 watch 待补记录）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。
 
 ## 协议实现（参考实现位置）
 
@@ -145,7 +145,7 @@
 
 ## watch 扩展 API 事实（0.3.0，§7，编译探针 / javap 核实）
 
-> 0.3.0 在 `bridge-mod` 落地 §7 的 watch 会话引擎（`WatchSnapshot` / `WatchRules` / `WatchSession` / `WatchEngine`，见 `debug-mcp/bridge-mod/README.md`）。下表是本轮为 watch **逐个核实过的 1.21.11 API**；仍属编译探针 / javap 结论，运行时待 Lead 真机补测（清单见文末）。
+> 0.3.0 在 `bridge-mod` 落地 §7 的 watch 会话引擎（`WatchSnapshot` / `WatchRules` / `WatchSession` / `WatchEngine`，见 `debug-mcp/bridge-mod/README.md`）。下表是本轮为 watch **逐个核实过的 1.21.11 API**，属编译探针 / javap 结论；watch 运行时验证记录见本节末尾（2026-11-17，部分通过）。
 
 | API | 结论 | 验证 |
 |---|---|---|
@@ -172,30 +172,38 @@
 | `AABB(double,double,double,double,double,double)` | 存在；区域实体查询包围盒 = 每轴 `[min, max+1)` | `[实测：javap]` |
 | 零第三方依赖 | 0.3.0 仍不引入 fabric-api / fastutil 等；只新增 4 个内部类，`gradle build` 全绿且 jar 内出现 `Watch*.class` | `[实测：编译探针]` |
 
-### watch 运行时待补记录（§7，全部 `[ ]`）
+### watch 运行时验证记录（§7，2026-11-17）
 
-> 与 v0.5.1 待补记录同纪律：未在活游戏上端到端跑过的一律保持 `[ ]`，不许把"编译通过"写成"运行时通过"。
+> 环境：MC 1.21.11 · Fabric loader 0.18.4 · JDK 21 · HMCL 实例 `thatgfsj`（重型模组包）· 集成服务端单人世界；bridge-mod **0.3.0**（含逐份游标修复 commit 69f77f5）。`[实测：运行时]`
+> 纪律：未在活游戏端到端跑过的保持 `[ ]`；一次客户端崩溃（03:48:35）为 Litematica 自身守护线程终止，栈内无 MCB/watch，属环境既有问题，未归因于 watch。
 
-- [ ] `watch.start` 单人世界：`side:"server"`、`non_air_count`/`entity_count`/`truncated_chunks`/`seq:0` 合理；未加载区块不触发强制加载（观察区块加载计数/日志）
-- [ ] 多人世界 / 主菜单：`WORLD_NOT_LOADED`，message 含 `watch sessions require an integrated server (server-authoritative sampling)`
-- [ ] `watch_id` 含 `.` / 重复（含 60s 保留期内已关闭）/ 非法字符 → `BAD_PARAMS`；体积 >32768 → `TOO_LARGE`；第 9 个活跃会话 → `TOO_LARGE` + `watch session limit reached`
-- [ ] 规则校验：深度 >4、节点 >16、未知 type、缺必填、参数越界、正则非法、非 `log.line` 事件源 → `RULE_INVALID`
-- [ ] `after_seconds(3.0)` + TNT 爆炸：`watch.await` matched、`trigger_reason="after_seconds(3.0)"`、`summary_diff` 的 total_changed/bounds/radius/transitions/sample_changes 与肉眼一致；auto_stop → `watch.stopped(auto_stop)`
-- [ ] `settle_quiet`：连锁反应静默后结算；`max_wait_seconds` 到时 → `trigger_reason:"timeout"` + `timed_out:true`
-- [ ] `on_condition` 四种 kind：block_match / block_state / entity_removed（out_of_bounds 不计触发）/ entity_hp_below
-- [ ] `interval(5)`：`seq` 递增、`trigger_reason="interval(5)#n"`、增量对比上次报告；`max_count` 用尽 → 停止
-- [ ] `repeat` + `until`：每轮一份报告、轮次用尽/until 命中 → 会话结束、final_report 为最后一份
-- [ ] `any` / `all(latched)` / `all(simultaneous)` / `sequence` 组合与 `trigger_reason/trigger_trace`
-- [ ] `timeline_events`：事件顺序与 tick、pos_epsilon/hp_epsilon 降噪、`counts` 完整而 `events` 截断置 truncated
-- [ ] `snapshot` 模式：blocks 的 properties、`include_nbt:true` 的 SNBT、entities 的 fields 投影、detail_limit 截断
-- [ ] `watch.snapshot`：`seq` 不 +1、不入缓冲、不改变规则状态；已释放基准（auto_stop 后保留期）→ `WATCH_NOT_FOUND`
-- [ ] `watch.list`：bounds/dimension/elapsed_ticks/rule_type/auto_stop/buffered_reports/seq/phase 正确；保留期会话不列出
-- [ ] `watch.await`：无触发等到 `wait_ms` 返回 `matched:false`（非 TIMEOUT）；**逐份游标**（matched 时 `next_seq`=返回报告 seq，interval/repeat 多报告不被跳过；无匹配时=缓冲区最新 seq）；缓冲溢出 `overflowed:true`；60s 保留期内可继续取；过期 → `WATCH_NOT_FOUND`
-- [ ] `watch.stop`：owner 返回 `stopped:true` + `final_report`（空会话为 null）；非 owner → `BAD_PARAMS` 含 `not the owner`
-- [ ] 连接断开 60s 后清理并推 `watch.stopped(client_disconnected)`
-- [ ] 维度卸载 → `dimension_unloaded`；集成服退出 → `server_stopped`；换世界/新开存档 → `server_changed`
-- [ ] `interval` 会话 300s 无 await 且无新报告 → `watch.stopped(idle_timeout)`
-- [ ] 事件推送：`watch.triggered` 的 report 与 await 一致；慢客户端队列满时 `status.droppedEvents` 增长且游戏不卡
+**已通过**
+
+- [x] `watch.start`：`side:"server"`、`non_air_count` / `entity_count` / `truncated_chunks` / `seq:0` 合理（实测 non_air_count=258、entity_count=1、truncated_chunks=[]）。
+- [x] `watch_id` 重复 / 含 `.` → `BAD_PARAMS`；体积 >32768 → `TOO_LARGE`；第 9 个活跃会话 → `TOO_LARGE` + `watch session limit reached`；未知规则 type → `RULE_INVALID`。
+- [x] `after_seconds(3.0)` + TNT（`fuse:10`）：matched、`trigger_reason="after_seconds(3.0)"`、`elapsed_ticks=60`；summary_diff `total_changed=46`、`affected_bounds` [24,100,24]–[32,104,32]、`max_radius_from_origin=4.58`、`transitions` stone→air 46、`sample_changes` 截断（`truncated:true`、`truncated_count:36`）；实体 pig `hp_before=10` / `hp_after=0` / `status=removed`。
+- [x] `settle_quiet(quiet_ticks=10)`：变化后静默结算，`trigger_reason=settle_quiet`。
+- [x] `on_condition`：`block_match`（stone→air，reason 形如 "on_condition(block_match...)"）与 `entity_hp_below`（对玩家 UUID、threshold 21 立即命中，reason 形如 "on_condition(entity_hp_below...)"）。
+- [x] `interval(5)`：`trigger_reason=interval(5)#n`；逐份游标修复后连续 await 依次拿到 seq 1/2/3 且 `next_seq==report.seq`，第 4 次 `matched:false`；`max_count` 用尽后会话结束。
+- [x] `repeat`（after_seconds 0.5，max_count 2）：连续两份报告 seq 1/2，`trigger_reason="repeat#1:after_seconds(0.5)"`。
+- [x] 报告模式：`summary_diff`（上述爆炸）；`timeline_events`（空窗口 `events:[]`、`counts:{}`、`truncated:false`）；`snapshot` 模式 blocks/entities 列表与 `detail_limit`。
+- [x] `watch.snapshot`：`trigger_reason:"snapshot"`、`seq` 不 +1、不入缓冲、规则状态不变。
+- [x] `watch.list`：活跃会话 metadata（bounds / dimension / elapsed_ticks / rule_type / auto_stop / buffered_reports / seq / phase）正确。
+- [x] `watch.await`：`matched:false` 正常超时；逐份游标（interval 场景）；缓冲 >64 时 `overflowed:true`（实测 `next_seq=83`）。
+- [x] `watch.stop`：owner 返回 `stopped:true`；非 owner → `BAD_PARAMS` 含 `not the owner`（双连接实测）。
+- [x] 事件推送：观察连接收到 `watch.triggered`（带 report）与 `watch.stopped(auto_stop)`。
+- [x] `watch.await` 对已关闭会话无新报告立即 `matched:false`（实现约定，已写入协议 §7.4）。
+
+**未验证 / 待补**
+
+- [ ] 多人世界 / 主菜单：`WORLD_NOT_LOADED`（message 含 `watch sessions require an integrated server (server-authoritative sampling)`）。
+- [ ] 未加载区块保护：`truncated_chunks` 非空、不强制加载（本轮测试区域已 forceload，未触发）。
+- [ ] `on_condition.block_state` / `entity_removed`；`repeat.until`；`any` / `all(latched|simultaneous)` / `sequence` 组合与 `trigger_trace`。
+- [ ] `timeline_events` 的非空事件顺序与 `pos_epsilon` / `hp_epsilon` 降噪、`counts` 完整而 events 截断。
+- [ ] `settle_quiet` 的 `max_wait_seconds` timeout 分支（`timed_out:true`）。
+- [ ] 60s 报告保留期后 `WATCH_NOT_FOUND`；auto_stop 后迟到 await 仍可取。
+- [ ] 连接断开 60s 清理 + `watch.stopped(client_disconnected)`；维度卸载 / 集成服退出 / 换世界；interval 300s 空闲 `idle_timeout`。
+- [ ] 慢客户端事件丢弃时 `status.droppedEvents` 增长。
 
 ## 运行时验证记录（v0.5.1，待补 —— 可追加段落）
 

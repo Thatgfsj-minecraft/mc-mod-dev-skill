@@ -1,6 +1,6 @@
 # 分级热迭代：先选最低成本的那一层，再动手
 
-> 适用环境：环境无关（Minecraft Java 模组开发通用流程）。示例命令以 MCB 参考实现（技能包 v0.5.1，bridge-mod 0.2.1；Fabric 1.21.11 桥接 + MCP Server）为具体载体；其他环境按 `debug-mcp.md` 的工具/op 对照表替换工具名。
+> 适用环境：环境无关（Minecraft Java 模组开发通用流程）。示例命令以 MCB 参考实现（技能包 v0.5.2，bridge-mod 0.3.0；Fabric 1.21.11 桥接 + MCP Server）为具体载体；其他环境按 `debug-mcp.md` 的工具/op 对照表替换工具名。
 > 验证方式：本文是流程约定 + 结构事实（原版行为经 1.21.11 反编译核实，逐条标注）。**耗时是量级估计**（同一台开发机、增量场景），不是基准测试；MCB 各 op 的运行时验证状态见 `environments/versions/1.21.11/bridge.md`。
 
 ## 1. 为什么要分级
@@ -52,6 +52,10 @@
 2. 增量构建：`./gradlew build`（或 IDE Rebuild），确认 `BUILD SUCCESSFUL`；产物与调试器类路径一致。
 3. 重跑 `runClient`，进**一次性测试世界**（§7），按改动面做完整行为复测。
 4. 若这轮是发布前验证，转到 `e2e-testing.md` 的专用服务器基线；L1/L2/L3 的快速验收**不能替代**回归。
+
+### 多 tick 行为验收（watch 会话）
+
+L4 重启后如果要验证**跨多个 tick 的行为**（爆炸半径、连锁反应、机器流水线、实体 AI/伤害），不要 `sleep` + 反复 `mc_scan_blocks`：用 `mc_watch_start` 建立 t0 基准并声明规则（`after_seconds` / `settle_quiet` / `on_condition` / `interval`），一次 `mc_watch_await` 拿回 t0→t1 的 `summary_diff` / `timeline_events` / `snapshot` 报告。用法与规则速查见 `debug-mcp.md` §6.7，协议见 `debug-mcp/protocol.md` §7。
 
 ## 4. 决策树
 
