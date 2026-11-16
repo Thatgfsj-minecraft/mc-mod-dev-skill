@@ -190,7 +190,7 @@
 - [ ] `snapshot` 模式：blocks 的 properties、`include_nbt:true` 的 SNBT、entities 的 fields 投影、detail_limit 截断
 - [ ] `watch.snapshot`：`seq` 不 +1、不入缓冲、不改变规则状态；已释放基准（auto_stop 后保留期）→ `WATCH_NOT_FOUND`
 - [ ] `watch.list`：bounds/dimension/elapsed_ticks/rule_type/auto_stop/buffered_reports/seq/phase 正确；保留期会话不列出
-- [ ] `watch.await`：无触发等到 `wait_ms` 返回 `matched:false`（非 TIMEOUT）；`next_seq` 无匹配也前进；缓冲溢出 `overflowed:true`；60s 保留期内可继续取；过期 → `WATCH_NOT_FOUND`
+- [ ] `watch.await`：无触发等到 `wait_ms` 返回 `matched:false`（非 TIMEOUT）；**逐份游标**（matched 时 `next_seq`=返回报告 seq，interval/repeat 多报告不被跳过；无匹配时=缓冲区最新 seq）；缓冲溢出 `overflowed:true`；60s 保留期内可继续取；过期 → `WATCH_NOT_FOUND`
 - [ ] `watch.stop`：owner 返回 `stopped:true` + `final_report`（空会话为 null）；非 owner → `BAD_PARAMS` 含 `not the owner`
 - [ ] 连接断开 60s 后清理并推 `watch.stopped(client_disconnected)`
 - [ ] 维度卸载 → `dimension_unloaded`；集成服退出 → `server_stopped`；换世界/新开存档 → `server_changed`

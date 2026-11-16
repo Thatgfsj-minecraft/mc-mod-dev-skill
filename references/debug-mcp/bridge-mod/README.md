@@ -94,7 +94,7 @@
 - 区域体积三轴乘积 >32768 → `TOO_LARGE`；活跃会话 >8 → `TOO_LARGE` 且 message 含 `watch session limit reached`。
 - auto_stop 默认：`after*`/`settle_quiet`/`on_condition`/`event`/`any`/`all`/`sequence` = true；`interval`/`repeat` = false；`repeat` 轮次用尽或 `until` 命中 → 结束会话（末份报告即 `final_report`）。
 - 报告：`summary_diff` 的 `transitions` 按计数降序取前 `detail_limit`；`timeline_events` 的 `counts` 始终完整、`events` 截断置 `truncated/truncated_count`；`snapshot` 的 `blocks/entities` 受 `detail_limit` 限制。单行报告由这些上限保证 <1 MiB（方块实体 SNBT 额外 512 字符截断）。
-- `watch.await` 缓冲 64 份；`next_seq` = 扫描时最新 seq（无匹配也前进）；缺口用 `overflowed:true` 暴露；已关闭会话立即返回 `matched:false`。
+- `watch.await` 缓冲 64 份；**逐份游标**：`matched:true` 时 `next_seq` = 本次返回报告的 seq（interval/repeat 在两次 await 之间产生的多份报告不会被跳过），`matched:false` 时 = 缓冲区最新 seq（无匹配也前进，避免空转）；缺口用 `overflowed:true` 暴露；已关闭会话立即返回 `matched:false`。
 - `watch.snapshot` 的 `seq` 为当前最新值但不 +1、不入缓冲；`trigger_reason="snapshot"`。
 
 ### 已知限制 / 实现注记

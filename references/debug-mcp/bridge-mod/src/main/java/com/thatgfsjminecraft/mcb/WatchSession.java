@@ -585,14 +585,16 @@ final class WatchSession {
             while (true) {
                 JsonObject found = firstReportAfter(afterSeq);
                 boolean overflowed = overflowed(afterSeq);
-                // §7.4: next_seq is the latest raw seq in the buffer — always,
-                // even when there is no match. A consumer cursor that is ahead
-                // of the session gets the real latest seq back so it can align
-                // instead of drifting forever.
-                int next = highestSeq;
                 if (found != null) {
-                    return awaitResponse(true, next, overflowed, found);
+                    // §7.4 (per-report cursor): next_seq is THIS report's seq,
+                    // so a consumer that produced several reports between two
+                    // awaits (interval/repeat) drains them one by one instead of
+                    // jumping to the newest seq and losing the middle ones.
+                    return awaitResponse(true, found.get("seq").getAsInt(), overflowed, found);
                 }
+                // No match: next_seq is the latest raw seq in the buffer, so the
+                // cursor still advances when there is nothing to return (§7.4).
+                int next = highestSeq;
                 // A closed session will never produce another report: return
                 // immediately instead of burning the full wait_ms budget.
                 if (closed) {
