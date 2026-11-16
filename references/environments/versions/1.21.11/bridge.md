@@ -3,7 +3,7 @@
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
 > 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。v0.5.3 的开发者模式弹窗（0.4.0）已完成编译探针 + javap + runClient 双场景实测（部分人工交互项保持 `[ ]`，见"开发者模式弹窗运行时验证记录"）。
 
 ## 协议实现（参考实现位置）
 
@@ -204,6 +204,51 @@
 - [ ] 60s 报告保留期后 `WATCH_NOT_FOUND`；auto_stop 后迟到 await 仍可取。
 - [ ] 连接断开 60s 清理 + `watch.stopped(client_disconnected)`；维度卸载 / 集成服退出 / 换世界；interval 300s 空闲 `idle_timeout`。
 - [ ] 慢客户端事件丢弃时 `status.droppedEvents` 增长。
+
+## 开发者模式弹窗 API 事实（0.4.0，javap / runClient 核实）
+
+| API | 结论 | 验证 |
+|---|---|---|
+| `ConfirmScreen(BooleanConsumer, Component title, Component message)` / 五参重载（自定义是/否按钮文案） | 均存在；三参构造默认用原版“是/否” | `[实测：javap]` |
+| `ConfirmScreen.layout` / `yesButton` / `noButton` / `callback` | `layout` 是 protected `LinearLayout`，是/否按钮由 `init()` 的 `addButtons(LinearLayout)` 加入；`callback` protected final | `[实测：javap + sources]` |
+| `ConfirmScreen.init()` / `repositionElements()` | 先 `super.init()`（布局居中）再追加自定义控件；重写 `repositionElements()` 在 `super` 之后按 `layout.getY()+layout.getHeight()` 定位复选框 | `[实测：sources + 编译探针]` |
+| `ConfirmScreen.keyPressed` ESC | `shouldCloseOnEsc()==false`；ESC 在 `keyPressed` 里显式 `callback.accept(false)`——因此 ESC 等价于【否】且不会重复弹窗 | `[实测：sources]` |
+| `Screen.repositionElements()` / `addRenderableWidget()` / `font` | 均存在；窗口 resize 会重建控件，复选框在 `init` 中重新添加并按布局重定位 | `[实测：javap]` |
+| `Checkbox.builder(Component, Font)` | 构造器 package-private，公开 builder：`.pos(x,y).maxWidth(n).selected(b).onValueChange((cb,v)->...).build()`；`selected()` 可读 | `[实测：javap + sources]` |
+| `Minecraft.screen` / `setScreen(Screen)` / `getOverlay()` | `screen` public 字段；`getOverlay()` 在加载遮罩存在时非 null（弹窗守门条件） | `[实测：javap]` |
+| `Minecraft.tick()` | `public void`；用 client Tick RETURN 的 `Inject` 做四重守门（不新增 fabric-api 依赖） | `[实测：javap + runClient]` |
+| `FabricLoader.getInstance().getConfigDir()` / `getModContainer(String)` | 前者返回 config 目录；后者返回 `Optional<ModContainer>`；`getMetadata().getName()/getId()` 供弹窗来源显示 | `[实测：javap]` |
+| `TitleScreen` | 主页面类；条件用 `screen instanceof TitleScreen` 兼容“扩展 TitleScreen 的自定义主界面”；别的 Mod 弹窗占屏时继续等待 | `[实测：runClient + 源码]` |
+| Mixin 位置 | 新增 `MinecraftMixin` 必须放进 `mcb.mixins.json` 的 `client` 数组；只 `Inject` 不 `Redirect`（跨 Mixin 版本安全，见红线 10） | `[实测：runClient 启动 + 编译探针]` |
+
+## 开发者模式弹窗运行时验证记录（0.4.0，2026-11-17）
+
+> 环境：`gradle runClient` 开发客户端（MC 1.21.11 · Fabric Loader 0.19.5 · JDK 21 · mixin 0.17.4），mcb 0.4.0，测试端口 25600（避开活游戏 25585）。`[实测：运行时]`
+> 纪律：人工交互项未自动化的保持 `[ ]`；不把“编译通过”写成“运行时通过”。
+
+**已通过**
+
+- [x] `-Dmcb.devMode=true`：日志 `dev mode from JVM property` → `ENABLE_SILENT`；**无弹窗**；端口立即监听；raw TCP `hello/status/watch.list` 正常。
+- [x] `-Dmcb.devMode=false`：`DISABLE_SILENT`；无弹窗；端口不监听；`run/options.txt` 的 `pauseOnLostFocus` 保持 `true`（**修复点**：帧末守卫曾未按开发者模式收口，会把选项改成 false；现由 `McbMod.isDevModeActive()` 守门）。
+- [x] 无参数 + 无配置：加载完进入 TitleScreen 后弹一次独立 `ConfirmScreen`（截图核对：标题/来源/正文/是/否/“记住本次选择”均在；主界面布局未被改动）；点【是】前端口不监听。
+- [x] ESC /【否】：返回 parent TitleScreen；端口仍不监听；再次等待后未重复弹窗（`prompt shown` 计数保持 1）。
+- [x] 鼠标点【是】：`dev-mode prompt answered: dev_mode=true` → 端口监听、`pauseOnLostFocus disabled`、`developer mode activated`。
+- [x] 勾选“记住本次选择”再点【否】：`config/mcb-bridge.properties` 写入 `remember_choice=true / dev_mode=false`；下一次启动 `dev mode from remembered config: dev_mode=false`，无弹窗、无端口。
+- [x] 配置 `dev_mode=true`：静默 `ENABLE_SILENT`，端口监听、无弹窗。
+- [x] 优先级 1 覆盖 2：配置 `dev_mode=true` + `-Dmcb.devMode=false` → 仍 `DISABLE_SILENT`、无端口。
+- [x] 非法 JVM 值：`-Dmcb.devMode=bogus` + 配置 `dev_mode=true` → WARN “ignoring invalid” 后按配置静默开启（符合“非法值按未传处理”）。
+- [x] 配置损坏 + 来源覆盖：`remember_choice=maybe` + `source_mod_name=Host Project Mod` → 降级 `ASK_ON_TITLE` 并弹窗，来源显示 `Host Project Mod（mcb）`。
+- [x] `activateDevMode()` 幂等：AtomicBoolean 保证重复调用不再开端口/不再改选项（代码审查 + 单次激活日志）。
+- [x] `gradle build` 全绿；`mc-debug-bridge-0.4.0.jar` 含 `McbDevModeConfig/McbDevModeScreen/MinecraftMixin`；`fabric.mod.json` 版本 0.4.0。
+
+**未验证 / 待补（人工交互）**
+
+- [ ] 进出存档退回主页面不重复弹窗（单次标志代码路径已保证，但未在“加载世界→退出到标题”链路上跑过）。
+- [ ] 与 Mod Menu / FancyMenu / ReplayMod 等主界面美化 Mod 共存（本 runClient 仅 5 个基础 mod；设计上不碰 TitleScreen 布局，仍需实机确认）。
+- [ ] 点【否】后在真实世界里切出窗口应正常暂停（本轮只核对了 `pauseOnLostFocus=true` 与未执行守卫日志，标题屏无法触发暂停）。
+- [ ] 点【是】后切出窗口不暂停/不进 ESC 的真实世界行为（沿用 v0.5.1 失焦保活，未在本轮重新跑世界内验证）。
+- [ ] 窗口 resize / GUI scale 下确认屏复选框与按钮的重排（本轮仅默认 854x480）。
+- [ ] 生产 remap jar 装进 HMCL 实机（本轮只跑 runClient 开发映射；Mixin 的 `Inject` 在两侧均验证过同类路径）。
 
 ## 运行时验证记录（v0.5.1，待补 —— 可追加段落）
 
