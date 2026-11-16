@@ -136,6 +136,7 @@ Project Conventions: …
 ## 8. Implementation Rules
 
 - **沿用项目约定**：注册、事件、网络、配置、命名都跟项目现状走；不要在别人的项目里引入第二套写法。
+- **DataGen 优先（数据资产）**：recipe / tags / loot / model 等优先用项目已有的 DataGen Provider 生成，而不是手写 JSON——手写与生成并存会路径漂移并**静默** 404（`pitfalls.md` C5）。生成资产的路径与格式随版本演进（如 1.21.4+ 物品模型改为 `assets/<ns>/items/`、数据组件机制、`pack_format` 变化），动路径前按 §7 核实目标版本；确实要手写 JSON 时，必须跑资源加载校验（L2 热重载 + 日志检索，见 §10 与 `references/fast-iteration.md`）。
 - **加载器隔离（多 Loader 项目）**：若项目采用"core + 各 Loader 入口"结构，保持 core 不 import 任何加载器类，加载器差异收敛到入口层；是否抽公共库由项目现有架构决定，不擅自重构。
 - **从零搭多版本 / 多 Loader 项目时**，常见架构模式（按复杂度递增）：
   1. 单项目单 Loader（绝大多数场景）
@@ -150,6 +151,7 @@ Project Conventions: …
 - **数据安全**：写回型数据结构用引用相等判断有效性、打开前做容量上限检查、拒绝嵌套写入；临时方块 / 实体的清理要抑制掉落防复制。
 - **配置解析**：逐字段手写解析 + 显式默认值 + 越界归一化，不依赖 Gson 自动反序列化。
 - **mod 兼容 tags 用可选引用**：`{ "id": "#c:<类别>", "required": false }`——目标环境没有该标签也不报错；建议覆盖全部原版变体。
+- **分级热迭代**：改完文件先按 `references/fast-iteration.md` 选**最低成本**的验证层级（L1 数据包 / L2 资源包 / L3 方法体 HotSwap / L4 完整重启），不要每改一行就全量重编译 + 重启。
   （以上涉及原版机制条目的类名为 Mojmap 写法；其他映射下名称不同、概念一致，动手前按目标项目映射核实。）
 
 ## 9. Build Verification（构建与发布）
@@ -164,13 +166,15 @@ Project Conventions: …
 - **测试方式跟随目标环境**：先问"这个版本 / Loader / 项目结构的标准验证路径是什么"，再搭测试。服务器安装方式随 Loader 不同（Fabric launcher / NeoForge 与 Forge installer），命令面（RCON、`/execute`、`/data`）是原版能力、与 Loader 无关。
 - 有玩家交互行为的 mod：**专用服务器 + 服务端权威断言**是基线；客户端机器人只做操作、不做状态断言。
 - 建议模组带**启动自检**：服务端启动时跑一次核心数据读写回环，日志输出 `SELF-TEST PASS`——任何版本升级、映射变化都能第一时间暴露数据层问题。
-- **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图。回归测试基线不变，MCB 只补实时性。
+- **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图/查询客户端屏幕与资源重载。回归测试基线不变，MCB 只补实时性。
+- **L1/L2 快速验收**：开发循环里数据包改动用 `mc_command({command:"reload"})` + 功能性探针验收，资源包改动用 `mc_reload_resources` + 日志检索 + `mc_client_screenshot` 落盘验收（见 `references/fast-iteration.md`）；**回归基线仍是专用服务器 E2E**，快速验收不替代回归。客户端自动化前先预置 `run/options.txt`（见 `e2e-testing.md`「客户端 run 目录预置」）。
 - 测试架构、服务器搭建、断言模式与踩坑（RCON 探针、区块加载、机器人协议）见 `references/e2e-testing.md`。
 
 ## 11. Debugging
 
 - 从日志出发 → 反编译确认内部约束 → 结论落到"文件:行号"。
 - **实时第一现场**：游戏正在跑时优先用 MCB 拿日志与堆栈（`references/debug-mcp.md`），`mc_wait_log` 抓异常关键字比翻文件快；游戏已退出再读 `latest.log` / 崩溃报告。
+- **渲染 / 贴图 / 模型类问题先走 L2**：`mc_reload_resources` 后 `mc_logs` 搜 `Failed to load model` / `Missing textures` / `Using missing texture`，再 `mc_client_screenshot` 看画面；资源层没排除前不要急着重启（见 `references/fast-iteration.md`）。
 - 复杂 bug 派子代理读源码调查，主代理审证据链。
 - "某平台独有 bug"大概率是漏改一处：先 diff 各构建的同源文件，再怀疑逻辑本身。
 - 行为级差异（编译通过但表现错）只有行为测试能暴露——回到 §10。
@@ -187,7 +191,7 @@ Project Conventions: …
 需要跨版本 / 跨 Loader 比较（迁移任务）时，再读取其他环境文件
 ```
 
-- 默认可读（通用方法层）：本文件 + `references/environment-discovery.md` + `references/api-verification.md` + `references/pitfalls.md` 第一部分 + `references/e2e-testing.md` + `references/debug-mcp.md`（接入实时调试时）+ `references/debug-mcp/protocol.md`（实现/移植桥接时）。
+- 默认可读（通用方法层）：本文件 + `references/environment-discovery.md` + `references/api-verification.md` + `references/pitfalls.md` 第一部分 + `references/e2e-testing.md` + `references/fast-iteration.md` + `references/debug-mcp.md`（接入实时调试时）+ `references/debug-mcp/protocol.md`（实现/移植桥接时）。
 - 环境知识层（`references/environments/`）：
   - 版本：`versions/<mc版本>/README.md` 版本卡 + `versions/<旧版本>/vs-<新版本>-<映射>.md` 已验证版本对差异。**覆盖清单的唯一事实来源是 `references/environments/versions/README.md` 的覆盖表**（新增版本不需要修改本文件）。
   - Loader：`loaders/<loaderA>-vs-<loaderB>-<版本线>.md`。

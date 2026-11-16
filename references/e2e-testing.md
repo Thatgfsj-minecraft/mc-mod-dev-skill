@@ -41,7 +41,76 @@
 3. `eula.txt`：`eula=true`；给 Bot 发 op（level 4）可让 chat 命令兜底。
 4. 多套并行：RCON 端口错开（25575/25576...）。
 
+## 客户端 run 目录预置（自动化友好）
+
+专用服务器的断言是回归基线，但**客户端侧**（`gradle runClient` / IDE 开发实例）同样要被脚本/AI 驱动：默认配置下它会停在开场引导屏、多人游戏警告屏，或者窗口一失焦就弹 PauseScreen——自动化还没开始就被自己挡住。启动前预置 `run/options.txt`：
+
+| 键 | 值 | 作用 | 依据 |
+|---|---|---|---|
+| `pauseOnLostFocus` | `false` | 窗口失焦不自动暂停（否则截图/命令执行期间弹出 PauseScreen） | `Options.pauseOnLostFocus`，默认 true |
+| `skipMultiplayerWarning` | `true` | 跳过多人游戏警告确认屏 | `Options.skipMultiplayerWarning` |
+| `onboardAccessibility` | `false` | 跳过首次启动的辅助功能引导屏（默认 true，新实例第一步就卡在这） | `Options.onboardAccessibility` |
+| `tutorialStep` | `none` | 跳过新手教程提示 | `TutorialSteps.NONE`（`Options.tutorialStep`） |
+
+> [实测：1.21.11 反编译] 四个键都由 `Options` 的 `processOptions` 按 `options.txt` 的 `key:value` 行读入（`Splitter.on(':')`）；`tutorialStep` 存的是枚举名 `none`。key 名跨版本基本稳定，但**改目标版本后仍应按 `environment-discovery.md` 的流程核实一次**（本文以 1.21.11 为验证版本）。
+
+**写入时机**：首次 `gradle runClient` 会创建 `run/` 并在退出时写出默认 `options.txt`；预置可以在首次运行前手工建 `run/options.txt`，也可以在首次运行之后、**下一次启动之前**写入——只要游戏启动时文件已在，就会被读入。CI 每次清 `run/`（clean 工作区）都必须重写，所以这段逻辑要放进**启动脚本**，而不是只做一次的手工操作。
+
+bash 写法（只增改这四个键，保留其余设置）：
+
+```bash
+set_opt() {  # 用法: set_opt key value
+  mkdir -p run && touch run/options.txt
+  awk -F: -v k="$1" -v v="$2" '
+    $1 == k { print k ":" v; found = 1; next }
+    { print }
+    END { if (!found) print k ":" v }
+  ' run/options.txt > run/options.txt.tmp && mv run/options.txt.tmp run/options.txt
+}
+set_opt pauseOnLostFocus false
+set_opt skipMultiplayerWarning true
+set_opt onboardAccessibility false
+set_opt tutorialStep none
+```
+
+node 写法（可直接放进 e2e 启动脚本）：
+
+```js
+const fs = require("node:fs");
+const path = require("node:path");
+
+function presetClientOptions(dir, want) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "options.txt");
+  const kept = fs.existsSync(file)
+    ? fs.readFileSync(file, "utf8").split(/\r?\n/).filter((line) => line.trim() !== "")
+    : [];
+  const keys = new Set(Object.keys(want));
+  const merged = kept.filter((line) => {
+    const i = line.indexOf(":");
+    return i < 0 || !keys.has(line.slice(0, i)); // 丢掉要改写的旧行
+  });
+  for (const [k, v] of Object.entries(want)) merged.push(`${k}:${v}`);
+  fs.writeFileSync(file, merged.join("\n") + "\n");
+}
+
+presetClientOptions("run", {
+  pauseOnLostFocus: "false",
+  skipMultiplayerWarning: "true",
+  onboardAccessibility: "false",
+  tutorialStep: "none",
+});
+```
+
+- **不要整文件覆盖**：`options.txt` 还有几十上百个键（键位、音量、语言…），覆盖会冲掉用户配置；只增改需要的键。
+- Loom 默认 `runDir` 是项目根的 `run/`；如果项目在 `build.gradle` 的 `runs { client { runDir ... } }` 里改过目录，脚本路径要跟着改。
+- **F3+P 是原版切换键**（1.21.11 `KeyboardHandler.handleDebugKeys` 里 `options.keyDebugFocusPause` 切换 `pauseOnLostFocus` 并 `options.save()`，[实测：1.21.11 反编译]），但**自动化不要靠按键注入**——窗口焦点、键码、输入法都不可靠。用 `options.txt` 预置 + 运行时 `mc_screen_current` 读 `pause_on_lost_focus` 核实；需要临时恢复原版行为做兼容测试时用 `mc_pause_on_lost_focus({enabled:true})`。
+- **桥接 Mod 0.2.0+ 启动会强制关一次**（`pauseOnLostFocus=false` + 失焦自动暂停守卫，见 `environments/versions/1.21.11/bridge.md`），这是最后一道保险；但只覆盖装了该 Mod 的客户端，纯原版客户端仍要靠 options.txt。
+- **options.txt 是"建议预置"而非硬保证**：原版在退出/改设置时会**重写整个文件**（[实测：1.21.11 反编译] `Options.save` 遍历全部选项写盘）。若有人在游戏里按了 F3+P、或兼容性测试把 `pause_on_lost_focus` 打开过，下次写盘会保留该值——所以每次启动前都要重写，而不是只在镜像里预置一次。
+
 ## 运行序列
+
+> 客户端侧自动化（`runClient`/IDE 开发实例）启动前，先按上一节「客户端 run 目录预置」写入 `run/options.txt`；桥接 Mod 0.2.0+ 启动时还会再强制关一次失焦暂停（双保险）。服务器基线不受影响。
 
 ```bash
 cd server-dir && <上表对应启动命令>                            # 必须在 server 目录里跑

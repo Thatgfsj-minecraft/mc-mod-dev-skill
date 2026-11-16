@@ -7,7 +7,7 @@
 ## 0. 设计原则
 
 1. **零依赖传输**：TCP + 每行一个 JSON（NDJSON）。不要求 WebSocket / HTTP 库，JDK `ServerSocket` 即可实现，Node `net.connect` 即可消费。
-2. **单向职责**：桥接端（游戏内）只做"读世界 + 抓日志 + 跑命令 + 截图"四件事；一切协议编解码、游标管理、重连逻辑都在 MCP Server（消费端）。
+2. **单向职责**：桥接端（游戏内）只做"读世界 + 抓日志 + 跑命令 + 截图 + 查询/控制客户端状态（屏幕、焦点、资源重载）"；一切协议编解码、游标管理、重连逻辑都在 MCP Server（消费端）。
 3. **本地信任**：只监听 `127.0.0.1`。本协议无鉴权——暴露到非回环地址等于把操作员权限交给本机任意进程，这是实现者的责任红线。
 4. **消息即行**：一行 = 一个 UTF-8 JSON 对象，以 `\n` 结尾，禁止行内出现裸 `\n`（JSON 字符串里的换行必须转义，标准 JSON 序列化器天然满足）。
 
@@ -69,6 +69,29 @@
 ## 3. Op 全集
 
 命名约定：`域.动作`，全小写。工具实现（MCP Server）应与 op 一一对应，不引入 op 之外的第二套抽象。
+
+### op 总览
+
+| op | 章节 | 一句话 |
+|---|---|---|
+| `ping` | §3.1 | 连通性探测 |
+| `status` | §3.2 | 世界 / 玩家 / 桥接状态快照（永远可查） |
+| `block.get` | §3.3 | 单方块状态 + 方块实体 |
+| `block.scan` | §3.4 | 区域方块扫描 |
+| `map.ascii` | §3.5 | 俯视图 / 切片字符画 |
+| `entity.list` | §3.6 | 区域实体列表 |
+| `log.history` | §3.7 | 日志增量拉取（缺口可见） |
+| `log.wait` | §3.8 | 日志长轮询（"跑命令 → 等那条日志"） |
+| `command.run` | §3.9 | 命令执行；`side` 选择服务端或客户端通道（v0.5.1 修订） |
+| `player.info` | §3.10 | 玩家详情 |
+| `screenshot.take` | §3.11 | 截图，PNG base64 内联 |
+| `camera.eye` / `camera.set` / `camera.clear` | §3.12 | 天眼自由相机 |
+| `player.move` | §3.13 | 带地面安全的传送 |
+| `camera.look` | §3.14 | 天眼射线查询 |
+| `screen.current` | §3.15 | 当前屏幕 / 窗口焦点 / 失焦暂停开关（v0.5.1 新增） |
+| `client.screenshot` | §3.16 | 截图落盘到 `screenshots/`（v0.5.1 新增） |
+| `client.pause_on_lost_focus` | §3.17 | 失焦暂停开关的读 / 写（v0.5.1 新增） |
+| `client.reload_resources` | §3.18 | 资源包热重载（v0.5.1 新增，L2 闭环配套增量） |
 
 ### 3.1 `ping`
 
@@ -184,17 +207,32 @@
 
 ### 3.9 `command.run`
 
-参数：`command`（字符串，不带前导 `/`）；可选 `timeoutMs`（默认 10000）。
+参数：`command`（字符串，**必填**；容忍前导 `/`，桥接端自行剥除）；可选 `side`（`"auto"` / `"server"` / `"client"`，默认 `"auto"`）；可选 `timeoutMs`（默认 10000，上限 60000）。
 
-响应 data：`{"success": true, "resultText": "Set the time to 1000", "feedback": []}`
+响应 data（v0.5.1 起；`returnValue` / `messages` / `side` 为**新增字段**，旧消费端可忽略）：
 
-执行语义（桥接端按序降级）：
+```json
+{"success": true, "returnValue": 1, "resultText": "Set the time to noon", "feedback": ["Set the time to noon"], "messages": ["Set the time to noon"], "side": "server"}
+```
 
-1. 存在集成服务端（单人存档）→ 在服务端主线程以**四级权限**执行，收集命令反馈。
-2. 无集成服务端但客户端已进服务器世界 → 作为**聊天消息**发送（原样带 `/`），此时反馈不可捕获，`resultText` 为空并在 message 里说明。
-3. 两者皆无 → `WORLD_NOT_LOADED`。
+执行语义（按 `side` 路由）：
 
-- 命令执行必须有超时保护，防止 `kill @e` 之类命令挂死桥接。
+- `side="server"`：存在集成服务端（单人存档）→ 在**服务端线程**以四级权限（`ALL_PERMISSIONS`）执行，收集命令反馈。无集成服务端 → `WORLD_NOT_LOADED`。
+- `side="client"`：走客户端命令通道 `ClientPacketListener.sendCommand(String)`（参数**不带**前导 `/`），适用于多人世界 / 无集成服务端的场景；客户端侧注册的命令经 Loader API 时由该通道分发。无连接 → `WORLD_NOT_LOADED`。该通道**无法捕获回显**：`resultText` 为 `""`、`messages` 为 `[]`、`returnValue` 为 `null`。
+- `side="auto"`：有集成服务端走 `server`，否则有连接走 `client`，否则 `WORLD_NOT_LOADED`（= 旧版行为，只多返回 `side` 字段）。
+
+字段语义：
+
+- `success`：命令是否成功执行（解析失败 / 执行异常为 `false`）。
+- `returnValue`：Brigadier `dispatcher.execute(ParseResults)` 的 int 返回值；`client` 路径或失败为 `null`。
+- `resultText`：人类可读的汇总文本（反馈 + 错误信息；超长截断见 §1）。
+- `feedback`：命令逐条反馈的字符串数组（**旧字段**，保留兼容）。
+- `messages`：与 `feedback` **同内容**的数组（设计文档使用的字段名）；两者必须一致，消费端任取其一。
+- `side`：本次实际执行的路径（`"server"` / `"client"`）。
+
+失败（解析 / 执行异常）：`success:false`、`returnValue:null`、`resultText` 为错误文本、`messages:[]`（因两者必须一致，`feedback` 同样为空）。
+
+- 命令执行必须有超时保护，防止 `kill @e` 之类命令挂死桥接；`timeoutMs` 到期仍未完成响应 `TIMEOUT`。
 
 ### 3.10 `player.info`
 
@@ -329,9 +367,70 @@
 - 射线在**客户端世界**上计算，与渲染帧用的方块数据同源，因此结论与画面一致。
 - 与 `camera.eye`/`camera.set` 配合使用：先用 `camera.look` 确认目标，再用 `camera.eye` 拍图。
 
+### 3.15 `screen.current`（v0.5.1 新增）
+
+参数：无。响应 data：
+
+```json
+{"in_world": true, "screen_class": null, "screen_title": null,
+ "window_focused": false, "pause_on_lost_focus": false,
+ "player": {"dimension": "minecraft:overworld", "pos": [12.5, 64.0, -8.2], "game_mode": "creative"}}
+```
+
+- `in_world`：世界是否已加载。
+- `screen_class`：`Minecraft.screen` 的 FQCN（如 `net.minecraft.client.gui.screens.PauseScreen`），无屏幕为 `null`。
+- `screen_title`：`Screen.getTitle().getString()`，无屏幕为 `null`。
+- `window_focused`：`Minecraft.isWindowActive()`——**与失焦暂停判定用的是同一个原版谓词**（§3.17 / bridge-mod 的守卫都依赖它）。
+- `pause_on_lost_focus`：`Options.pauseOnLostFocus` 的当前值（由 `options.save()` 持久化到 `options.txt`）。
+- `player`：世界未加载时为 `null`；`pos` 为玩家**脚部**坐标（double 三元组），`game_mode` 取 `mc.gameMode.getPlayerMode().getName()`（如 `creative`）。
+- 用途：诊断"画面是不是被 PauseScreen 挡住 / 窗口失焦导致暂停 / 当前在哪个 GUI"——不读一个像素就能回答，比截图便宜得多。
+- **永远成功**（除 `INTERNAL`），不因世界未加载报错。
+
+### 3.16 `client.screenshot`（v0.5.1 新增，文件落盘版）
+
+参数：可选 `filename`（默认 `mcb-<epochMillis>.png`；**只取 basename**，过滤 `[^A-Za-z0-9._-]`，无 `.png` 后缀时补上）；可选 `hide_hud`（bool，默认 `false`）。
+
+响应 data：
+
+```json
+{"path": "/abs/run/screenshots/mcb-1712345678901.png", "width": 1280, "height": 720,
+ "screen_class": null, "hide_hud": false, "bytes": 123456}
+```
+
+- 与 §3.11 `screenshot.take` **并存**：`screenshot.take` 内联 base64（适合快速看图），本 op 落盘并返回绝对路径（适合"验收截图"留档、后续反复比对）。
+- 写 `Minecraft.gameDirectory/screenshots/`（原版截图目录）；**文件写完才响应**，`path` 为绝对路径，`bytes` 为文件字节数。
+- 在**帧末渲染线程**抓帧（读取渲染帧缓冲）——像素只能在渲染线程读，见 §6。
+- `hide_hud=true`：临时置 `options.hideGui=true`，**必须在被捕获的那一帧渲染之前生效**，并在**像素读取完成后立即恢复原值**（只影响该帧）；它不隐藏已经打开的 `Screen`（GUI 界面照常出现在截图里）。
+- `screen_class`：抓帧时 `Minecraft.screen` 的 FQCN，用来判断"截图里是不是 PauseScreen 挡着画面"。
+- 仅客户端可实现；专用服务端返回 `CLIENT_ONLY`。
+- 看门狗 10s → `TIMEOUT`。
+- 线程纪律：像素读取必须在渲染线程帧末；PNG 编码与写盘在 IO 线程（`Util.ioPool()`），写盘完成后才发响应（§6）。
+
+### 3.17 `client.pause_on_lost_focus`（v0.5.1 新增）
+
+参数：可选 `enabled`（bool）；**缺省 = 只读查询**。
+
+响应 data：`{"enabled": false, "auto_pause_guard": true}`
+
+- 无 `enabled`：只返回当前状态，不修改任何东西。
+- 传 `enabled`：设置 `options.pauseOnLostFocus = enabled` 并 `options.save()` 持久化；同时联动桥接端守卫：`enabled=true` → `auto_pause_guard=false`（**恢复原版失焦自动暂停**，供兼容性测试）；`enabled=false` → `auto_pause_guard=true`。
+- `auto_pause_guard`：桥接端是否屏蔽"原版失焦自动暂停"（默认 `true`，桥接启动时强制关掉 `pauseOnLostFocus` 并置位，见 bridge-mod README "失焦保活"）。
+- ⚠️ 该守卫**只针对失焦自动暂停**，**不影响 ESC 手动暂停**：ESC 同样调用 `pauseGame(false)`，粗暴取消 `pauseGame(boolean)` 会把 ESC 暂停菜单一起干掉（详见 §6 第 6 条与 bridge-mod README 红线）。
+- **永远成功**（除 `INTERNAL`）。
+
+### 3.18 `client.reload_resources`（v0.5.1 新增，L2 闭环配套）
+
+参数：无。响应 data：`{"reloaded": true, "duration_ms": 1234}`
+
+- 客户端主线程调用 `Minecraft.reloadResourcePacks()` → `CompletableFuture<Void>`；future 完成（成功**或异常**）后响应；重载抛异常 → `INTERNAL`。
+- 看门狗 30s → `TIMEOUT`（资源包大 / 着色器编译慢时超时是真实可能）。
+- **增量扩展说明**：设计文档并未列出此 op，它属于"**L2 资源热重载闭环**"的配套增量（改完资源包不重启游戏即可验收：热重载 → 查日志错误 → 截图）。它**不改变**协议主版本（§4）。
+- 仅客户端；专用服务端返回 `CLIENT_ONLY`。
+- 本 op 只保证"重载流程已结束"，不保证"资源都加载成功"——加载错误必须配合 `log.history` / `log.wait` 检索（`Missing` / `Unable to load model` / `Unknown item` 等）。
+
 ## 4. 版本化
 
-- `protocol` 主版本号出现在 `hello` 中。**新增 op、新增可选参数、新增响应字段 = 向后兼容，主版本号不变**。
+- `protocol` 主版本号出现在 `hello` 中。**新增 op、新增可选参数、新增响应字段 = 向后兼容，主版本号不变**。v0.5.1 新增的 §3.15–§3.18 四个 op 与 §3.9 的新增响应字段（`returnValue` / `messages` / `side`）都属这一类：`hello.protocol` 仍为 `1`，消费端必须忽略不认识的响应字段而不是报错。
 - 删除/改名 op、改变字段语义、改变信封结构 = 主版本号 +1。
 - 消费端应对未知 op 回 `BAD_OP` 而不是断连——向前兼容由消费端降级，桥接端保持简单。
 
@@ -352,3 +451,6 @@
 1. TCP 接收/发送在独立 IO 线程；**任何世界/实体/方块读取必须投递到游戏主线程**执行后回填响应（游戏 API 不是线程安全的，这条纪律违反了会产生随机崩溃，而且是本协议所有实现里最难查的坑）。
 2. 响应顺序不作保证——桥接端允许并发处理长轮询；消费端按 `id` 匹配。
 3. 桥接端崩溃（`INTERNAL`）不得关闭 TCP 连接；只有游戏退出才断连。
+4. **截图**（§3.11 / §3.16）：帧缓冲 / GL 像素访问必须在**渲染线程的帧末**执行。§3.16 的 PNG 编码与写盘在 IO 线程（`Util.ioPool()`），**写盘完成后**才发响应；`hide_hud` 的临时值必须在**被捕获帧渲染前生效**、在**同一次像素读取回调内**恢复，否则会漏改全局状态或抓到 HUD 已恢复的帧。
+5. **屏幕 / 暂停 / 资源重载**（§3.15 / §3.17 / §3.18）：读 `Minecraft.screen` / 读写 `Options` 必须在**客户端主线程**；`reloadResourcePacks()` 也在客户端主线程发起，future 完成后可从任意线程发响应（响应唯一性仍按 §2.2）。
+6. **失焦暂停守卫只允许拦原版自动暂停的调用点**（渲染循环里的失焦分支），**不允许**拦 `pauseGame(boolean)` 全局入口——ESC 也走同一个入口（见 §3.17 与 bridge-mod README 红线）。

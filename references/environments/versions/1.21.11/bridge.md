@@ -1,16 +1,16 @@
 # MCB 调试桥实现要点（MC 1.21.11 · Fabric · Mojmap）
 
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
-> 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。
+> 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态：15 个 op 已全部实测通过**（见文末"运行时验证记录"）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。
 
 ## 协议实现（参考实现位置）
 
 - 参考实现：`references/debug-mcp/bridge-mod/`（协议规范：`references/debug-mcp/protocol.md`）
-- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.1.0.jar`（remapJar 正常）。`[实测：编译探针]`
+- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.2.0.jar`（remapJar 正常，2026-11-17 00:54；jar 内含 `McbClientOps.class` 与新 `McbScreenshot`/`GameRendererMixin`）。`[实测：编译探针]`；本节 API 结论以编译探针 + 反编译源码为准。
 
-## 编译探针核实过的 API（移植时直接对照）
+## 已核实的 API（编译探针 / javap / 反编译源码，移植时直接对照）
 
 | API | 结论 | 验证 |
 |---|---|---|
@@ -28,6 +28,41 @@
 | `Inventory.getItem(int)` | 存在（1.21.11 未变） | `[实测：javap]` |
 | `ClientPacketListener.sendChat(String) / sendCommand(String)` | 两者都存在；`sendCommand` 接收**不带**前导 `/` 的命令串（`/` 开头的消息走 `sendChat` 会被拒绝）——command.run 的多人降级路径用 `sendCommand` | `[实测：javap]` |
 | log4j2 `AbstractAppender` 生命周期 | 自建 appender **必须先 `start()` 再 addAppender**——不 start 时 `append()` 被静默跳过（无报错、无日志），这是日志子系统"看起来接好了但什么都不输出"的常见根因 | `[实测：log4j2 生命周期契约]` |
+| `Options.pauseOnLostFocus` | public `boolean`，默认 `true`；`Options.java:316`（序列化在 `:1479`，由 `options.save()` 写回 options.txt，`save()` 在 `:1659`）。写入后必须 `save()` 才持久化 | `[实测：反编译源码]` |
+| `Options.hideGui` | public `boolean`（`Options.java:717`），F1 同款开关（`KeyboardHandler` 里 `options.hideGui = !options.hideGui`）；抓帧时可临时置 true 并在像素读取后恢复 | `[实测：反编译源码]` |
+| `GameRenderer.render(DeltaTracker, boolean)` 的失焦分支 | 方法在 `GameRenderer.java:465`；分支 `:466-472`：`!isWindowActive() && options.pauseOnLostFocus && (!touchscreen() \|\| !mouseHandler.isRightPressed())` 且 `Util.getMillis() - lastActiveTime > 500L` → `:470` `minecraft.pauseGame(false)`；`else` 更新 `lastActiveTime`（字段 `:127`）。**换版本必须重新反编译核实调用点与阈值** | `[实测：反编译源码]` |
+| `Minecraft.pauseGame(boolean)` | `Minecraft.java:1561`：仅当 `screen == null` 时 `setScreen(new PauseScreen(...))`（单人未发布存档传 `!bl`，否则 `PauseScreen(true)`）。⚠️ **ESC 也调用它**：`KeyboardHandler.java:554` `this.minecraft.pauseGame(bl2)`（`bl2`=F3 修饰键状态，普通 ESC 为 `false`） | `[实测：反编译源码]` |
+| `Minecraft.screen` | `Minecraft.java:360` `public @Nullable Screen screen`——`screen.current` 的 `screen_class`/`screen_title` 来源 | `[实测：反编译源码]` |
+| `Screen.getTitle()` | `Screen.java:99` 返回 `Component`（`title` 字段在 `:63`）；`getString()` 得纯文本 | `[实测：反编译源码]` |
+| `Minecraft.isWindowActive()` | `Minecraft.java:2617`，**与失焦暂停判定同一个原版谓词**（`screen.current.window_focused` 直接用它） | `[实测：反编译源码]` |
+| `Minecraft.gameDirectory` | `Minecraft.java:303` `public final File`，即 `run/` 根；截图落盘目录是 `gameDirectory/screenshots/`（`Screenshot.SCREENSHOT_DIR` 在 `Screenshot.java:25`） | `[实测：反编译源码]` |
+| `Minecraft.reloadResourcePacks()` | `Minecraft.java:997`，返回 `CompletableFuture<Void>`（内部私有重载在 `:1001`）；客户端主线程调用 | `[实测：反编译源码]` |
+| `Screenshot.grab(File, String, RenderTarget, int, Consumer<Component>)` | `Screenshot.java:27/31`：内部调 `takeScreenshot`，随后把 `NativeImage.writeToFile` 丢给 `Util.ioPool()`，consumer 收到 success/failure `Component`。**异步写盘、时序不可控** → 落盘截图 op 不用它 | `[实测：反编译源码]` |
+| `Screenshot.takeScreenshot(RenderTarget, Consumer<NativeImage>)` | `Screenshot.java:64`（缩放重载 `:68`）：同步在渲染线程读像素，consumer 在渲染线程回调；配合 `NativeImage.writeToFile` 自写盘 | `[实测：反编译源码 + javap]` |
+| `Util.ioPool()` | `Util.java:213`，后台 IO executor；PNG 写盘放这里，不占渲染线程 | `[实测：反编译源码]` |
+| `NativeImage.writeToFile(File)` / `(Path)` | `NativeImage.java:313` / `:342`；`NativeImage` **没有** `asByteArray()`（与既有结论一致） | `[实测：反编译源码]` |
+| `ClientPacketListener.sendCommand(String)` | `ClientPacketListener.java:2670`（`sendChat` 在 `:2662`）；参数**不带**前导 `/`——`command.run` 的 `side=client` 走它 | `[实测：反编译源码 + javap]` |
+| `MultiPlayerGameMode.getPlayerMode()` | `MultiPlayerGameMode.java:536`，返回 `GameType`；`getName()` 得 `creative` 等（`screen.current.player.game_mode` 用它） | `[实测：反编译源码]` |
+
+## v0.5.1 增量 op 实现状态（编译探针 / 源码核实，运行时待验证）
+
+> 0.2.0（`mc-debug-bridge-0.2.0.jar`）于 2026-11-17 00:54 构建成功（remapJar 正常）；下表状态 = 编译探针 + 源码核实，**均未做真实游戏运行时验证**。
+
+| 能力 / op | 实现点（参考实现） | 状态 |
+|---|---|---|
+| 失焦保活（启动关 `pauseOnLostFocus` + 渲染循环失焦守卫） | `McbMod.onInitializeClient()` + `mixin/GameRendererMixin`（`@Redirect` `Minecraft.pauseGame(Z)V`） | 编译探针 + 源码核实；**运行时待验证** |
+| `command.run` 的 `side` 路由与 `returnValue`/`messages`/`side` 字段 | `McbServer` dispatch + `McbHandlers.commandRun`（server 路径）/ `ClientPacketListener.sendCommand`（client 路径） | 编译探针 + 源码核实；**运行时待验证** |
+| `screen.current` | `McbClientOps.screenJson()`（客户端主线程） | 编译探针 + 源码核实；**运行时待验证** |
+| `client.screenshot`（落盘版） | `McbClientOps.requestScreenshot(...)` + `GameRendererMixin` 帧末 `onFrameEnd()` + `McbScreenshot` | 编译探针 + 源码核实；**运行时待验证** |
+| `client.pause_on_lost_focus` | `McbClientOps.pauseToggle(Boolean)`（写 `options` + `save()`） | 编译探针 + 源码核实；**运行时待验证** |
+| `client.reload_resources` | `McbClientOps.reloadResources(callback)`（`reloadResourcePacks()` future + 30s 看门狗） | 编译探针 + 源码核实；**运行时待验证** |
+
+环境事实补充：
+
+- `mcb.mixins.json` 的 `client` 数组已含 `CameraMixin` / `GameRendererMixin` / `GuiMixin`——引用 `Options` / `Screen` / `Gui` 的 Mixin **必须**在 client 数组，否则专用服务端会 ClassNotFound。`[实测：反编译源码 + 构建配置]`
+- `Options.pauseOnLostFocus` 的写入必须紧跟 `options.save()`，否则只影响当前进程、退出即被原版覆盖。`[实测：反编译源码]`
+- **Fabric client entrypoint 早于 `options` 赋值**：fabric-loader 0.19.5 `patch/EntrypointPatch.java:549-552` 在 `>=1.19.4` 时把 `startClient` 钩子注入 `Minecraft.<init>` 内、`Thread.currentThread()` 调用之前（`Hooks.startClient` 在此回调 `ClientModInitializer.onInitializeClient`）；1.21.11 `Minecraft.java:438` 先赋 `gameThread`、`:439` 才 `this.options = new Options(...)`。故不能在入口处直接读 `options`——参考实现延迟到首个 client tick（`McbClientOps.scheduleFocusKeepAlive()`，带 ≤20 tick 重试）。`[实测：反编译 fabric-loader 0.19.5 sources + 1.21.11 Minecraft.<init> 顺序]`
+- 截图时序：请求在客户端主线程登记 pending → 帧末（`GameRenderer.render` RETURN）读像素 → 恢复 `hideGui` → `Util.ioPool()` 写盘 → 写盘完成后响应。**不要用 `Screenshot.grab`**（异步写盘，无法在像素读完后立即恢复 `hideGui`，也拿不到写盘完成时点）。`[实测：反编译源码 + 实现约束]`
 
 ## 天眼自由相机（Mixin 实现要点）
 
@@ -89,4 +124,18 @@
 
 - **环境事实：X11 输入注入找游戏窗口**：`xprop -id <id> WM_CLASS` 才能认准游戏窗口——**顶层标题 "THATGFSJ" 其实是 GameViewer（远程串流客户端），不是 Minecraft**。真游戏窗口的 `WM_CLASS` 是 `Minecraft* 1.21.11`（1280x720 的 GLFW 子窗口）。按键必须用 **XTEST**（`libXtst.so.6` 的 `XTestFakeKeyEvent`）注入，LWJGL 忽略 `XSendEvent` 的合成事件。`[实测：X11 注入链路排障]`
 - **环境事实：直启游戏要自己拼 classpath**：从 `thatgfsj.json` 的 `libraries` 推导——**部分库（fabric-loader 等）没有 `downloads.artifact` 字段**，只有 Maven 坐标，得按 `group/artifact/version/artifact-version.jar` 拼路径；入口类是 `net.fabricmc.loader.impl.launch.knot.KnotClient`（不是 `Knot`，后者没有 main）。`[实测：直启脚本排障]`
+
+## 运行时验证记录（v0.5.1，待补 —— 可追加段落）
+
+> 本节是**可追加占位**：v0.5.1 的新能力需要 Lead 在真实实例（活游戏）上做端到端验证后再落笔；未跑过的项保持 `[ ]`，**不许**把"编译通过"写成"运行时通过"。
+> 记录格式建议：日期 / 实例与 PID / 请求参数 / 实际响应摘要 / 证据（截图路径、日志 row）/ 与规格的偏差。
+
+- [ ] **失焦保活**：窗口失焦 >500ms 世界不暂停（`screen.current.window_focused=false` 且 `screen_class=null`）；`screen.current.pause_on_lost_focus=false`
+- [ ] **ESC 回归**：失焦保活生效时按 ESC 仍能打开 PauseScreen（守卫不能误伤 ESC 路径）
+- [ ] `screen.current`：在世界内 / 主菜单 / PauseScreen 三种状态下 `in_world` / `screen_class` / `screen_title` / `window_focused` / `player` 如实
+- [ ] `client.screenshot`：落盘到 `run/screenshots/`、`path` 绝对路径存在且非空、`bytes`/`width`/`height` 与文件一致；`hide_hud=true` 时该帧无 HUD 且下一帧 HUD 恢复；`filename` 非法字符被过滤
+- [ ] `client.pause_on_lost_focus`：无参只读；写 `enabled` 后 `options.txt` 持久化、guard 联动；恢复原版行为后失焦确实暂停（兼容性回归）
+- [ ] `client.reload_resources`：`reloaded=true`、`duration_ms` 合理；改资源包后热重载生效；错误资源包 → 日志可检索（`Missing`/`Unable to load model`）
+- [ ] `command.run` `side`：`server` 返回 `returnValue` 为整数且 `feedback===messages`；`client` 路径 `resultText=""`/`messages=[]`/`returnValue=null`；`auto` 路由正确；失败路径 `success=false`
+- [ ] 超时路径：`client.screenshot` 10s / `client.reload_resources` 30s 看门狗各只回一个响应（`responded` 生效）
 

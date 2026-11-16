@@ -89,6 +89,9 @@
 **C4. [数据包] `data/tags/...` 不是新 tag 路径，会让服务器拒启**
 [实测：1.21.5] 把 datapack 里的 tag 放到 `data/tags/worldgen/world_preset/normal.json`（少了命名空间段）时，`data/` 后第一段被解析为**命名空间 `tags`**，该文件被当成 `tags:normal` 这个 world_preset 的定义去解析（报 `No key dimensions`），注册表加载失败**直接拒绝开机**。tag 路径在任何 1.21.x 都必须是 `data/<命名空间>/tags/...`；错误信息的"world_preset"字样极具误导性，先查路径再查内容。
 
+**C5. [1.21.4+ / DataGen] 手写 JSON 与 DataGen 输出路径漂移 → 静默 404**
+[实测：1.21.11 反编译；1.21.4 起的路径变更为公开变更记录] 物品模型改由 `minecraft:item_model` 数据组件指向 `assets/<ns>/items/<id>.json`（item model definition，`ClientItemInfoLoader` 用 `FileToIdConverter.json("items")` 读；旧的 `models/item/<id>.json` 不再被当作物品模型入口）。DataGen 的 `ModelProvider` 同样输出到 `items` 路径。两类事故都是**静默**的：① 手写文件还放在旧路径 `models/item/` —— 游戏里紫黑格 / 空模型，日志只有 `Missing model for variant` / `Failed to load model` 一类 WARN/ERROR；② 手写目录（`src/main/resources`）与 DataGen 输出目录（如 `src/generated/resources`）同时存在、合并顺序不确定——表现为"改了手写 JSON 没生效"或"本地对、CI 产物不对"。规则：同一资产只保留**一条来源**（手写或 DataGen 二选一）；DataGen 输出目录必须加入对应 sourceSet；资产路径变更后按 `fast-iteration.md` L2 走"热重载 + 日志检索 + 截图"验收，**不要只看 `gradle build` 绿**（JSON 不参与编译，构建绿与资源可用无关）。
+
 ### 测试
 
 **D1. [测试·版本相关] mineflayer 客户端解析崩溃（1.21.x 实测）**
@@ -126,6 +129,21 @@
 
 **D9. [测试·老版本] pre-1.8 服务器没有方块探针命令**
 [实测：1.7.10/1.12.2] RCON 可用，但 `/testforblock` 1.8+ 才有、`/execute if block` 1.13+ 才有——1.7.10 无任何方块断言命令。替代：**解析存档 region 文件**（自研 Anvil/NBT 解析器，服务器写盘即服务器权威证据；注意 1.7.10 NBT 用数字物品 id：熔岩桶=327、冰=79）；1.12.2 有 `testforblock` 可用。bot 方面 mineflayer 最低支持 1.8.8——1.7.10 无 bot 路线，玩家相关行为只能"代码审查 + 存档证据"或如实标注未验证。1.12.2 无头服务器下界维度无玩家不加载——下界类断言在无 FML 客户端时天然受限，如实标注。
+
+### Mixin 安全
+
+**E1. [Fabric × 通用] client-only Mixin 必须放 `mixins.json` 的 `client` 数组**
+Mixin 配置里默认数组 `"mixins"` 与 `"server"` 数组会在**专用服务器**也加载。Mixin 类一旦 import 或引用 `net.minecraft.client.Options` / `Screen` / `Minecraft` 这类客户端类，服务器（没有客户端类）在类加载阶段就 `NoClassDefFoundError` / `ClassNotFoundException`，**启动即崩**。判定很简单：这个 Mixin 的 `@Mixin` 目标或方法体里出现任何 `net.minecraft.client.*` → 放 `"client": [...]`。桥接 Mod 的失焦守卫、渲染抓帧、屏幕查询全部属于 client 数组（参考 `debug-mcp/bridge-mod/src/main/resources/mcb.mixins.json`）。
+
+**E2. [多 Mod 兼容 × 通用] 优先 MixinExtras，不要 `@Overwrite`**
+`@Overwrite` 会整方法替换，与任何改同一方法的其它 Mod 必冲突（后加载者赢、行为不可预测）。优先 `@WrapOperation`（包裹单个调用点，多个 Mod 可叠加）与 `@ModifyExpressionValue`（改表达式返回值），它们由 MixinExtras 提供、可与原版 Mixin 共存。桥接参考实现是**零依赖**约束，只能用原版 `@Redirect` 拦单个调用点——比 `@Overwrite` 窄，但仍会与改同一调用点的 Mod 抢注入，所以代码里必须注释"为什么这里用 @Redirect 而不是 MixinExtras"；正式模组不背零依赖约束时优先 MixinExtras。
+
+**E3. [实测：反编译 1.21.11] `pauseGame(boolean)` 不是"失焦专用"：ESC 也走同一个入口**
+`Minecraft.pauseGame(boolean bl)` 只做 `if (screen == null) setScreen(new PauseScreen(!bl))`。**ESC 暂停也调用它**：`KeyboardHandler.keyPressed` 里 `boolean bl2 = options.keyDebugModifier.isDown()`（F3 修饰键状态），随后 `if (bl6 && keyEvent.isEscape()) this.minecraft.pauseGame(bl2)`——普通 ESC 时 F3 没按，等价于 `pauseGame(false)`。因此**禁止**用 Mixin 粗暴取消 `pauseGame(boolean)`（或全局 `@Redirect` 该入口）：ESC 暂停菜单会一起消失。
+正确做法二选一：① **改上游开关** `Options.pauseOnLostFocus=false`（原位、可持久化，F3+P 就是这个开关的切换键：`KeyboardHandler` 里 `options.keyDebugFocusPause` 命中后取反并 `options.save()`）；② **只拦失焦调用点**——`GameRenderer.render(DeltaTracker, boolean)` 中 `if (!minecraft.isWindowActive() && options.pauseOnLostFocus && ...) { if (Util.getMillis() - lastActiveTime > 500L) minecraft.pauseGame(false); }`，只对这个具体调用点做 `@Redirect`/`@WrapOperation`，ESC 路径完全不受影响。桥接参考实现两者都做（开关 + 调用点守卫），且守卫只作用在渲染循环的失焦分支。详见 `debug-mcp/protocol.md` §3.17 与 `debug-mcp/bridge-mod/README.md` 红线。
+
+**E4. [实测：1.21.11] `@Inject` 要改返回值，必须写 `cancellable = true`**
+`@Inject` 默认不允许取消；方法体里调 `cir.setReturnValue(...)` 而未声明 `cancellable = true` 时，Mixin 在运行期抛 `CancellationException`（日志 "The call method_xxxx is not cancellable"），**渲染线程直接崩**。天眼 FOV 覆盖（`GameRenderer.getFov` TAIL）曾因此每帧必崩（`crash-2026-11-15_16.35.20-client.txt`）。规则：凡是注入后要 `setReturnValue` / `cancel` 的，`cancellable = true` 与注入一起写、不要事后补。
 
 ---
 
