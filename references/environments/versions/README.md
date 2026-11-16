@@ -74,7 +74,7 @@ versions/
 | 1.21.8 | [1.21.8/](1.21.8/README.md) | 卡内含探针 + 移植 [实测]（SavedData=SavedDataType、setDefaultSpawnPos、旧 noise 字段；vs 文件 §2/§5/§6/§7） |
 | 1.21.9 | [1.21.9/](1.21.9/README.md) | 卡内含探针 + 移植 [实测]（spawn chunk 移除、ResourceLocation、SavedDataType、setRespawnData、preliminary_surface_level；NeoForge 21.9 线仅 beta，见卡内） |
 | 1.21.10 | [1.21.10/](1.21.10/README.md) | 卡内含移植 [实测]（与 1.21.9 同 API 面，四构建 + 行为测试） |
-| 1.21.11 | [1.21.11/](1.21.11/README.md) | 同 1.21.1（差异文件放在较旧版本侧，从 1.21.1 侧阅读）；另见 [vs-26.x-deobf](1.21.11/vs-26.x-deobf.md)（去混淆化断层）；MCB 调试桥：[bridge.md](1.21.11/bridge.md)（编译探针 + watch/开发者模式部分运行时实测；其余运行时状态见文件内记录） |
+| 1.21.11 | [1.21.11/](1.21.11/README.md) | 同 1.21.1（差异文件放在较旧版本侧，从 1.21.1 侧阅读）；另见 [vs-26.x-deobf](1.21.11/vs-26.x-deobf.md)（去混淆化断层）；MCB 调试桥：[bridge.md](1.21.11/bridge.md)（编译探针 + watch/开发者模式部分运行时实测 + world.* 2026-11-17 真机验收；其余运行时状态见文件内记录） |
 | 26.1 | [26.1/](26.1/README.md) | [vs-26.x-deobf](1.21.11/vs-26.x-deobf.md)（三线实测）+ 卡内移植实测（bot E2E 全绿） |
 | 26.2 | [26.2/](26.2/README.md) | [vs-26.x-deobf](1.21.11/vs-26.x-deobf.md) + 卡内移植实测（noise 键仍 preliminary_surface_level） |
 | 26.3 | [26.3/](26.3/README.md) | [vs-26.x-deobf](1.21.11/vs-26.x-deobf.md) + 卡内移植实测（worldgen 大改重写级） |

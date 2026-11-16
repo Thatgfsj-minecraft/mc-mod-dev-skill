@@ -164,6 +164,7 @@ Project Conventions: …
 ## 10. Testing / E2E
 
 - **测试方式跟随目标环境**：先问"这个版本 / Loader / 项目结构的标准验证路径是什么"，再搭测试。服务器安装方式随 Loader 不同（Fabric launcher / NeoForge 与 Forge installer），命令面（RCON、`/execute`、`/data`）是原版能力、与 Loader 无关。
+- **搭场景前先拉干净测试世界（刚性约束，v0.5.4）**：AI 自主测试 / 搭场景时**优先**用 MCB `mc_world_create`（只传 `name` + `preset` 即可——默认就是创造模式 + 关结构 + 关自然刷怪 + normal 难度 + 锁正午晴天 + 固定种子）新建测试世界，**默认不要进玩家已有的生存默认世界**，也不要在上一轮实验的残留存档里接着做。只有两类情况才覆盖默认值：①本次测试的就是生存机制（挖掘耗时 / 饥饿 / 死亡掉落）→ `game_mode:"survival"`；②本次测试的就是结构生成 → `generate_structures:true`。测试结束用 `mc_world_delete` 清理；**固定存档名 + `clean_if_exists:true`** 是本约束的 fast-iteration 写法。专用服的等价 `server.properties` 与 bootstrap gamerule 见 `references/e2e-testing.md`「测试世界基线（Fabric 1.21.11，v0.5.4）」，调用纪律见 `references/debug-mcp.md` §6.9。
 - 有玩家交互行为的 mod：**专用服务器 + 服务端权威断言**是基线；客户端机器人只做操作、不做状态断言。
 - 建议模组带**启动自检**：服务端启动时跑一次核心数据读写回环，日志输出 `SELF-TEST PASS`——任何版本升级、映射变化都能第一时间暴露数据层问题。
 - **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图/查询客户端屏幕与资源重载；跨多个 tick 的实验（爆炸半径/连锁反应/实体伤害）用 watch 会话（规则驱动，一次拿 t0→t1 报告，见 `debug-mcp.md` §6.7），不要 sleep 盲轮询。回归测试基线不变，MCB 只补实时性。

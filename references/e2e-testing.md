@@ -131,9 +131,124 @@ JAVA_TOOL_OPTIONS="-Dmcb.devMode=true -Dmcb.port=25585" gradle runClient
 
 > 本节与上一节的 `options.txt` 预置**互补**：`devMode=true` 时桥接会在启动后关 `pauseOnLostFocus`；`devMode=false` 或未装桥接时，仍要靠 `options.txt` 预置来防失焦暂停。
 
+## 测试世界基线（Fabric 1.21.11，v0.5.4）
+
+> **位置**：本节是"测试前先把世界拉干净"的双端基线——客户端集成服用 MCB `mc_world_create`，专用服 E2E 用 `server.properties` + 启动 bootstrap 命令。协议契约见 `debug-mcp/protocol.md` §8，客户端工具用法见 `debug-mcp.md` §6.9。
+>
+> **依据**：`server.properties` 键名、超平坦 `generator-settings` 字段、gamerule id 均按 **1.21.11 反编译核实**（`DedicatedServerProperties` / `FlatLevelGeneratorSettings` / `FlatLayerInfo` / `FlatLevelSource` / `GameRules`）；客户端集成服的实际出生点 / 刷怪 / 天气行为已于 2026-11-17 runClient 真机对照通过（四预设建图、gamerule、世界内重建、删除路径；详见版本卡 `bridge.md` 的 v0.5.4 运行时记录）；**专用服侧**的 `server.properties` 键名与生成器字段仍为反编译核实、未起专用服逐项对照。
+
+### 客户端集成服：首次进世界前先建图
+
+AI 自主测试（含 `gradle runClient` / IDE 开发实例）**默认不要进玩家已有的默认生存世界**：野怪、村庄、动物、天气、地形都会污染观察结果。第一次进世界前先按协议 §8 建一个受控测试世界：
+
+```text
+mc_status()                                              # 1. 基线：已连上；worldLoaded=false 表示停在主菜单（已在世界内也可直接建，见下）
+mc_world_create({ name: "mcb_e2e", preset: "flat_clean" })  # 2. 只传 name + preset，其余默认
+mc_status()                                              # 3. 复查：worldLoaded=true、player.gamemode=creative、timeOfDay=6000、raining=false
+...                                                      # 4. 搭场景 / 测试 / 截图（见 debug-mcp.md §6）
+mc_world_delete({ name: "mcb_e2e", force: true })        # 5. 结束清理
+```
+
+**默认值就是"干净世界"**（协议 §8.0；AI 平时不用传，只有下文"两种覆盖默认值的正当理由"才改）：
+
+| 参数 | 默认 | 效果 |
+|---|---|---|
+| `game_mode` | `creative` | 不会被野怪 / 坠落 / 饥饿打断 |
+| `generate_structures` | `false` | 不生成村庄 / 要塞 / 遗迹，地形可预测 |
+| `do_mob_spawning` | `false` | 关自然刷怪（**不是**和平模式，见下） |
+| `difficulty` | `normal` | 保证 `/summon` 的敌对测试怪不消失 |
+| `lock_time` / `lock_weather` | `6000` / `clear` | 锁正午晴天，光照与画面稳定 |
+| `keep_inventory` | `true` | 意外死亡不丢测试物品 |
+| `seed` | `12345` | 可复现（`vanilla_quiet` 尤其需要） |
+| `clean_if_exists` | `true` | 同名存档自动删旧建新 |
+
+**fast-iteration 纪律**：**固定存档名**（建议 `mcb_e2e`）+ `clean_if_exists: true`，每一轮实验都从全新世界开始——残留方块 / 实体 / 掉落物是"上一轮通过、这一轮失败"的头号假故障源。不要在自动化流程里手工新建 / 切换存档；测试结束 `mc_world_delete` 清理（只允许删 `mcb_` 前缀或带 `.mcb-world.json` 标记的测试存档，玩家手工存档受 `WORLD_DELETE_FORBIDDEN` 硬保护）。
+
+**只在这两种情况下覆盖默认值**（其余情况"图省事"改默认会让观察结果失真）：
+
+1. 本次测试的就是**生存机制**（挖掘耗时、饥饿、死亡掉落）→ `game_mode: "survival"`（或测试中途 `mc_command({command:"gamemode survival"})`）；
+2. 本次测试的就是**结构生成**（自定义地牢 / 遗迹 / 村庄建筑）→ `generate_structures: true`。
+
+**失败降级**：`BAD_OP` = 桥接 Mod < 0.5.0（协议 v0.5.4 才新增 `world.*` op），回退"手工进一次性测试世界"的旧流程（仍遵守本节预置）；`CLIENT_ONLY` = 连的是专用服桥接（建图 / 删图是客户端专有能力，协议 §8）；`TIMEOUT` = 建图超时（默认看门狗 120s，慢机器显式传 `timeout_ms`；协议 op 字段名是 `timeoutMs`，MCP 工具层是 `timeout_ms`）。
+
+**已在世界里也能直接建**：`world.create` 会先退出当前世界、退回主菜单，再删旧建新（`world.progress` 阶段 `disconnecting` → `deleting` → `creating` → `awaiting_join` → `applying`）。方便，但**当前世界未落盘的状态有丢失风险**——自动化流程仍应在受控测试世界里操作，不要把玩家存档当作临时落点（删除玩家存档另有 `WORLD_DELETE_FORBIDDEN` 红线）。
+
+### 专用服 server.properties：4 套预设的双端对齐
+
+专用服 E2E 断言是回归基线，世界形状要和客户端预设对齐，否则"客户端能过、专用服不过"的差异会浪费整轮排查。**公共键**（4 套预设都写）：
+
+```properties
+online-mode=false
+enable-rcon=true
+rcon.password=testpass
+rcon.port=25575
+spawn-protection=0
+level-name=mcb-e2e
+gamemode=creative
+difficulty=normal
+generate-structures=false
+level-seed=12345
+```
+
+> `difficulty` 的默认值是 **easy**（1.21.11 `DedicatedServerProperties.difficulty` 默认 `Difficulty.EASY`）——不写就**不是** normal，必须显式写（原因见文末「为什么是 difficulty normal + 关自然刷怪，而不是和平模式」）。
+
+**每套预设的生成配置**（`level-type` 取 world preset id：`minecraft:normal` / `minecraft:flat` / `minecraft:large_biomes` / `minecraft:amplified` / `minecraft:single_biome_surface`，非法值会 warn 并回退 `minecraft:normal`；`generator-settings` **只在 `level-type=minecraft\:flat` 时被解析**，其它预设留空）：
+
+| preset | `level-type` | `generator-settings` | 说明 |
+|---|---|---|---|
+| `bedrock_lab` | `minecraft\:flat` | `{"layers":[{"block":"minecraft:bedrock","height":3}],"structure_overrides":[],"biome":"minecraft:plains"}` | 超平坦 3×基岩（世界最低 Y 起，1.21.11 为 Y=-64），地基炸不穿、不掉虚空；出生点约 `[0,-61,0]` |
+| `flat_clean` | `minecraft\:flat` | `{"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}],"structure_overrides":[],"biome":"minecraft:plains"}` | 原版超平坦层序（1 基岩 + 2 泥土 + 1 草）；`lakes` / `features` 不写即 false（无湖、无装饰）；出生点约 `[0,-60,0]` |
+| `vanilla_quiet` | `minecraft\:normal` | （不写） | 原版主世界 + 固定 seed 12345，关结构；只在需要真实群系 / 矿脉时用 |
+| `void_platform` | `minecraft\:flat` | `{"layers":[],"structure_overrides":[],"biome":"minecraft:the_void"}` | 空 `layers` = 全空气虚空；9×9 平台与出生点 server.properties 表达不了，见下节 |
+
+**三个必须显式写的点**（都是 1.21.11 反编译核实的语义，不写行为会漂）：
+
+1. **`structure_overrides: []` 不能省**：超平坦生成器"没写该字段"= **所有结构集都可生成**（`FlatLevelSource.createState` 里 `orElseGet(全部结构集)`），只有空数组才是"结构覆盖为空"。`generate-structures=false` 是另一道闸（`StructureManager` / `ChunkStatusTasks` 检查 `WorldOptions.generateStructures`），两道一起写才是协议 §8.3 要求的对齐。
+2. **`layers` 必填**：缺字段会解析失败并报 `No key layers`（`pitfalls.md` D2 已记录同类坑）；`{"layers":[]}` 是合法的纯虚空配置（全员空气即 `voidGen`）。
+3. **`biome` 建议显式写**：省略时超平坦 codec 会走 `LOGGER.error("Unknown biome, defaulting to plains")`，在"服务器日志零异常"的判定里是一条假 ERROR——写 `minecraft:plains`（或虚空用 `minecraft:the_void`）即可避免。
+
+> `biome` 不是协议 §8.2 的预设契约（属实现细节）：本表写 `minecraft:plains` 只是为了消掉上面那条假 ERROR；换成 `minecraft:the_void` 会让超平坦场地更"无背景"（适合截图类测试），两者都属等价的服务端配置，断言不受影响。
+
+**属性文件写法**：JSON 直接写在值里即可（`:` 是键值分隔符，值里的冒号不需要转义；`level-type` 按本文件既有惯例写 `minecraft\:flat` 也能正常读）。换行符不要放进值里——一个属性一行。
+
+### server.properties 表达不了的项：启动 bootstrap 命令补齐
+
+下列协议默认值**没有对应的 server.properties 键**（1.21.11 `DedicatedServerProperties` 中不存在），必须在每轮测试开始前用 RCON 命令（或 datapack `minecraft:tick` function）补齐，并逐条检查命令回执：
+
+| 协议默认（§8.0） | 1.21.11 落地方式 | 备注 |
+|---|---|---|
+| `do_mob_spawning: false` | `/gamerule spawn_mobs false` | gamerule id 是 `spawn_mobs`（不是旧写法 `doMobSpawning`） |
+| `lock_time: 6000` | `/gamerule advance_time false` + `/time set 6000` | 先冻结再设时间，否则时间继续走 |
+| `lock_weather: "clear"` | `/gamerule advance_weather false` + `/weather clear` | 同上 |
+| `fire_tick: false` | `/gamerule fire_spread_radius_around_player 0` | 1.21.11 已无 `doFireTick`；`0` = 只有玩家贴身才会蔓延（等价"基本关闭"），`-1` = 不限制 |
+| `keep_inventory: true` | `/gamerule keep_inventory true` | — |
+| `allow_commands: true` | **无此键**：专用服建图时 `LevelSettings.allowCommands` 固定传 `false` | 玩家要用命令先 `/op <bot>`；控制台 / RCON 本身是 level 4，不受影响。协议 §8.3 的该映射只对客户端集成服存档有意义 |
+| `void_platform` 的平台与出生点 | `/fill -4 64 -4 4 64 4 minecraft:bedrock` + `/setworldspawn 0 65 0` | 平台先铺好再让 bot 进场，否则掉虚空；顺序：进世界 → 铺平台 → `setworldspawn` → 放 bot |
+
+固定 bootstrap 建议（照抄进 e2e 启动脚本，逐条断言回执）：
+
+```text
+/gamerule spawn_mobs false
+/gamerule advance_time false
+/time set 6000
+/gamerule advance_weather false
+/weather clear
+/gamerule fire_spread_radius_around_player 0
+/gamerule keep_inventory true
+```
+
+### 为什么是 difficulty normal + 关自然刷怪，而不是和平模式
+
+- **和平模式（`peaceful`）下 `/summon` 的敌对怪会立即消失**——战斗、伤害、仇恨、掉落类断言全部做不了，表现为"命令成功了但实体没了"。
+- 正确组合是 **`difficulty: normal` + `do_mob_spawning: false`**：没有野怪偷袭，但随时能召唤僵尸 / 骷髅做测试。
+- 因此：客户端预设默认 normal；专用服必须显式 `difficulty=normal`（默认 easy 不够）；**不得**为了"安全"把难度调成 peaceful。
+- 反例（都会让断言恒假或不可复现）：为省事开 peaceful；开着自然刷怪再靠 `kill @e` 清场（和刷怪赛跑）；把 `spawn_mobs` 当"和平模式替代"却忘了锁时间 / 天气。
+
+> 这套世界基线是**回归测试的前置**，不是回归本身：断言模式（RCON `/execute` `/data` 探针）与覆盖清单不变。客户端侧建图工具的调用纪律见 `debug-mcp.md` §6.9。
+
 ## 运行序列
 
-> 客户端侧自动化（`runClient`/IDE 开发实例）启动前，先按上一节「客户端 run 目录预置」写入 `run/options.txt`；桥接 Mod 0.2.1+ 启动时还会再强制关一次失焦暂停（双保险）。服务器基线不受影响。
+> 客户端侧自动化（`runClient`/IDE 开发实例）启动前，先按「客户端 run 目录预置」写入 `run/options.txt`（桥接 Mod 0.2.1+ 启动时还会再强制关一次失焦暂停，双保险）；**第一次进世界前按「测试世界基线」建测试世界**（`mc_world_create`），不要默认进玩家的生存存档。服务器基线不受影响，但每轮起服后要先跑「测试世界基线」里的 bootstrap gamerule 序列再让 bot 进场。
 
 ```bash
 cd server-dir && <上表对应启动命令>                            # 必须在 server 目录里跑
