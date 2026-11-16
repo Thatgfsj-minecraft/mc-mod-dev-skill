@@ -8,6 +8,7 @@
  * `isError: true` so MCP clients can distinguish failures from data
  * (protocol.md §5 codes are echoed in the text for AI readability).
  */
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { bridge, BridgeError } from "./bridge.js";
@@ -50,6 +51,16 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "mc_screen_current",
+    {
+      title: "Current screen / focus state",
+      description: "Read the client's current Screen and window focus: in_world, screen_class/screen_title (null when no Screen is open), window_focused (vanilla Minecraft.isWindowActive), pause_on_lost_focus (the upstream option that decides whether losing window focus opens the pause menu), and player dimension/pos/gamemode. Use this to diagnose 'the game looks stuck / a screenshot is covered by the pause menu' and to prove no Screen is covering the HUD after a command.",
+      inputSchema: {},
+    },
+    wrap(() => bridge.request("screen.current")),
+  );
+
+  server.registerTool(
     "mc_player",
     {
       title: "Player info",
@@ -63,7 +74,7 @@ export function registerTools(server: McpServer): void {
     "mc_block_get",
     {
       title: "Get one block",
-      description: "Read a single block: id, state properties, block entity type and NBT. Use for precise checks after mc_map / mc_scan.",
+      description: "Read a single block: id, state properties, block entity type and NBT. Use for precise checks after mc_map / mc_scan_blocks.",
       inputSchema: {
         x: z.number().int().describe("block X coordinate"),
         y: z.number().int().describe("block Y coordinate"),
@@ -180,16 +191,23 @@ export function registerTools(server: McpServer): void {
     "mc_command",
     {
       title: "Run a game command",
-      description: "Execute a Minecraft command (no leading slash) as operator level 4 on the integrated server: setblock, tp, summon, time set, give, etc. Primary way for you to set up test scenes.",
+      description: "Execute a Minecraft command (no leading slash): setblock, tp, summon, time set, give, etc. Primary way for you to set up test scenes. side picks the execution channel: auto (default) uses the integrated server when a world is loaded, otherwise the client command channel; server runs on the integrated server at permission level 4 (needs a singleplayer world); client uses the client command channel (also works in multiplayer, but command echo may not be capturable). The response echoes side plus returnValue/messages so you can tell which path ran.",
       inputSchema: {
         command: z.string().describe('command without leading slash, e.g. "setblock 0 64 0 minecraft:stone"'),
+        side: z.enum(["auto", "server", "client"]).optional().describe("execution side: auto (default) | server | client"),
         timeoutMs: z.number().int().optional(),
       },
     },
-    wrap(async (args: any) =>
-      bridge.request("command.run", {
+    wrap(async (args: any) => {
+      const params: Record<string, any> = {
         command: args.command, timeoutMs: args.timeoutMs ?? 10000,
-      }, (args.timeoutMs ?? 10000) + 10000)),
+      };
+      // Protocol §3.9: side is optional — omit it so the bridge applies its own
+      // default (auto). Omitting (instead of sending "auto") stays byte-compatible
+      // with 0.1.x bridges that predate the field.
+      if (args.side !== undefined) params.side = args.side;
+      return bridge.request("command.run", params, (args.timeoutMs ?? 10000) + 10000);
+    }),
   );
 
   server.registerTool(
@@ -214,6 +232,81 @@ export function registerTools(server: McpServer): void {
         return errorText(e);
       }
     },
+  );
+
+  server.registerTool(
+    "mc_client_screenshot",
+    {
+      title: "Screenshot to a file",
+      description: "Capture the game window to a PNG file under <gameDir>/screenshots/ and return BOTH the image (multimodal) and the absolute file path + size, so you can reference a stable artifact across steps (before/after comparison, post-mortem review). filename must be a bare file name (directories are stripped by the bridge; a .png suffix is added when missing); default mcb-<epochMillis>.png. hide_hud=true hides the vanilla HUD for that one frame only (an already-open Screen stays visible — check mc_screen_current). The bridge waits until the file is fully written.",
+      inputSchema: {
+        filename: z.string().optional().describe('bare file name, e.g. "after.png" (default mcb-<epochMillis>.png)'),
+        hide_hud: z.boolean().optional().describe("hide the vanilla HUD for this one frame (default false)"),
+      },
+    },
+    async (args: any) => {
+      try {
+        const params: Record<string, any> = {};
+        if (args.filename !== undefined) params.filename = args.filename;
+        if (args.hide_hud !== undefined) params.hide_hud = args.hide_hud;
+        // Bridge-side watchdog is 10s (protocol §3.16) and includes the file
+        // write; give the round trip headroom above that so we see its TIMEOUT
+        // contract instead of racing it with our own.
+        const data: any = await bridge.request("client.screenshot", params, 20000);
+        const head = `${data.path} | ${data.width}x${data.height} | screen_class=${data.screen_class ?? "none"} | hide_hud=${data.hide_hud ?? false} | bytes=${data.bytes ?? "?"}`;
+        try {
+          // §4: the MCP process runs on the same machine as the game, so read the
+          // file back and ship the pixels inline — no protocol change needed.
+          const png = await readFile(data.path);
+          return {
+            content: [
+              { type: "image", mimeType: "image/png", data: png.toString("base64") },
+              { type: "text", text: `${head} | file_read_back=${png.length}` },
+            ],
+          };
+        } catch (e) {
+          // Degrade to text only: the game may run on another machine or the path
+          // may be unreadable, but the model must still learn where the shot went.
+          return {
+            content: [{
+              type: "text",
+              text: `${head} | WARNING: screenshot file unreadable from the MCP process (${(e as Error).message})`,
+            }],
+          };
+        }
+      } catch (e) {
+        return errorText(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "mc_pause_on_lost_focus",
+    {
+      title: "Get/set pause-on-lost-focus",
+      description: "Read or write the vanilla pauseOnLostFocus option. Omit enabled for a read-only probe. enabled=true restores vanilla behaviour (losing window focus pauses the game) and switches the bridge's auto-pause guard off; enabled=false (the bridge's startup default) keeps the game running while the window is unfocused. Returns {enabled, auto_pause_guard}; auto_pause_guard reports the bridge's Mixin guard, which can suppress the focus-loss pause even while enabled=true.",
+      inputSchema: {
+        enabled: z.boolean().optional().describe("omit for read-only; true/false also persists to options.txt"),
+      },
+    },
+    wrap(async (args: any) => {
+      // Protocol §3.17: absent enabled = read-only; never send a null default.
+      const params: Record<string, any> = {};
+      if (args.enabled !== undefined) params.enabled = args.enabled;
+      return bridge.request("client.pause_on_lost_focus", params);
+    }),
+  );
+
+  server.registerTool(
+    "mc_reload_resources",
+    {
+      title: "Reload client resources (F3+T equivalent)",
+      description: "Reload resource packs on the client, the programmatic F3+T, so changed textures/models/blockstates/lang take effect without restarting the game. Returns {reloaded, duration_ms}. Use mc_logs afterwards and search for missing model/texture errors — resource failures usually fail SILENTLY on screen.",
+      inputSchema: {},
+    },
+    // Bridge-side watchdog is 30s (protocol §3.18); allow more so its TIMEOUT
+    // contract surfaces rather than our client-side timeout.
+    wrap(() => bridge.request("client.reload_resources", {}, 40000)),
   );
 
   server.registerTool(
