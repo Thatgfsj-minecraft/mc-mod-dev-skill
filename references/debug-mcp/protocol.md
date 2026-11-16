@@ -699,6 +699,7 @@
 ```
 
 - **游标语义**（与 §3.7 `log.history` 的 `afterId` 同构，但逐份消费）：`matched: true` 时 `next_seq` = 本次返回报告的 `seq`（**逐份前进，不跳过未读报告**）；`matched: false` 时 `next_seq` = 缓冲区当前最新 seq（无新报告时也前进，保证消费端不空转）；`0` 表示尚无任何报告。消费端把 `next_seq` 作为下一次的 `after_seq`，即可按顺序取走全部报告。
+- 已关闭（auto_stop / `watch.stop` / 生命周期回收）且缓冲区中没有 `seq > after_seq` 的报告时，`watch.await` **立即返回** `matched: false`，不空等 `wait_ms`：已关闭会话不可能再产生报告，这是避免无意义阻塞的实现约定。
 - 长轮询期间任一规则触发立即返回；无触发则等到 `wait_ms` 到期返回 `matched: false`（**这是正常分支，不是 `TIMEOUT` 错误**）。
 - **缺口可见**：每个会话最多缓冲 64 份未消费报告；超过后淘汰最老的报告。若存在无法恢复的缺口（缓冲区最老 seq > `after_seq + 1`），响应置 `overflowed: true`——与 §3.7 的 `overflowed` 同款纪律，**不许静默丢报告**。
 - 同一会话允许多个连接 / 多个并发 await；服务端不推进共享游标，游标由消费端自己保存。

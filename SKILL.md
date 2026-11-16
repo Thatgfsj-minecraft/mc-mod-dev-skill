@@ -166,7 +166,7 @@ Project Conventions: …
 - **测试方式跟随目标环境**：先问"这个版本 / Loader / 项目结构的标准验证路径是什么"，再搭测试。服务器安装方式随 Loader 不同（Fabric launcher / NeoForge 与 Forge installer），命令面（RCON、`/execute`、`/data`）是原版能力、与 Loader 无关。
 - 有玩家交互行为的 mod：**专用服务器 + 服务端权威断言**是基线；客户端机器人只做操作、不做状态断言。
 - 建议模组带**启动自检**：服务端启动时跑一次核心数据读写回环，日志输出 `SELF-TEST PASS`——任何版本升级、映射变化都能第一时间暴露数据层问题。
-- **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图/查询客户端屏幕与资源重载。回归测试基线不变，MCB 只补实时性。
+- **实时调试增强（MCB）**：需要"边跑边看"的场景（搭场景 → 看世界变化 → 抓异常），接入 `references/debug-mcp.md` 的实时调试基建——桥接 Mod 读世界/抓日志/跑命令/截图/查询客户端屏幕与资源重载；跨多个 tick 的实验（爆炸半径/连锁反应/实体伤害）用 watch 会话（规则驱动，一次拿 t0→t1 报告，见 `debug-mcp.md` §6.7），不要 sleep 盲轮询。回归测试基线不变，MCB 只补实时性。
 - **L1/L2 快速验收**：开发循环里数据包改动用 `mc_command({command:"reload"})` + 功能性探针验收，资源包改动用 `mc_reload_resources` + 日志检索 + `mc_client_screenshot` 落盘验收（见 `references/fast-iteration.md`）；**回归基线仍是专用服务器 E2E**，快速验收不替代回归。客户端自动化前先预置 `run/options.txt`（见 `e2e-testing.md`「客户端 run 目录预置」）。
 - 测试架构、服务器搭建、断言模式与踩坑（RCON 探针、区块加载、机器人协议）见 `references/e2e-testing.md`。
 
