@@ -28,6 +28,29 @@ const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8B
 fs.writeFileSync(SHOT_PATH, Buffer.from(PNG_1X1, "base64"));
 const SHOT_BYTES = fs.statSync(SHOT_PATH).size;
 
+// protocol §7.12 report fixture: the fake bridge returns it VERBATIM so the test
+// proves the consumer passes report fields through instead of reshaping them.
+const WATCH_REPORT = {
+  watch_id: "explosion_test_01", seq: 1, report_mode: "summary_diff",
+  trigger_reason: "after_seconds(3.0)", trigger_trace: ["after_seconds(3.0)"],
+  elapsed_ticks: 60, side: "server", truncated: false,
+  block_summary: {
+    total_changed: 138,
+    affected_bounds: { min: [-4, 60, -4], max: [4, 67, 4] },
+    max_radius_from_origin: 4.24,
+    transitions: { "minecraft:stone -> minecraft:air": 96, "minecraft:dirt -> minecraft:air": 38 },
+    sample_changes: [{ pos: [0, 63, 0], from: "minecraft:stone", to: "minecraft:air" }],
+  },
+  entity_summary: {
+    affected_count: 2, removed_count: 1, entered_count: 0,
+    impacts: [
+      { uuid: "550e8400-e29b-41d4-a716-446655440000", type: "minecraft:pig", hp_before: 10.0, hp_after: 0.0, status: "removed" },
+      { uuid: "7c9e6679-7425-40de-944b-e07fc1f90ae7", type: "minecraft:zombie", hp_before: 20.0, hp_after: 6.5, status: "alive" },
+    ],
+  },
+};
+const isVec3 = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number");
+
 // Captured request params, asserted at the bottom so we test the WIRE shape
 // rather than only the tool's surface behavior.
 let blockGetParams = null;
@@ -36,6 +59,12 @@ let shotParams = null;
 let pauseParams = null;
 let reloadParams = null;
 let commandParams = null;
+// Watch session (protocol §7) wire-shape captures, asserted at the bottom.
+let watchStartParams = null;
+const watchAwaitParams = [];
+let watchSnapshotParams = null;
+let watchListParams = null;
+let watchStopParams = null;
 
 const server = net.createServer((socket) => {
   socket.setEncoding("utf8");
@@ -241,6 +270,128 @@ const server = net.createServer((socket) => {
             dimension: "minecraft:overworld",
             groundWasMissing: true, placedGlass: true, placedGlassVerified: true,
           });
+          break;
+        }
+        case "watch.start": {
+          // §7.1: watch_id + min/max int[3] required; origin/dimension/tracks/
+          // report_mode/detail_limit/max_entity_count optional. tracks and
+          // upload_rule must arrive VERBATIM — the rule tree is bridge-side.
+          const q = req.params ?? {};
+          watchStartParams = q;
+          const unknown = Object.keys(q).filter((k) => ![
+            "watch_id", "min", "max", "origin", "dimension", "tracks", "upload_rule",
+            "report_mode", "detail_limit", "max_entity_count",
+          ].includes(k));
+          if (unknown.length) {
+            fail("BAD_PARAMS", `watch.start unknown params: ${unknown.join(",")} (protocol §7.1)`);
+            break;
+          }
+          if (typeof q.watch_id !== "string" || q.watch_id.length === 0) {
+            fail("BAD_PARAMS", "watch.start requires a non-empty watch_id (protocol §7.1)");
+            break;
+          }
+          if (q.watch_id.includes(".")) {
+            fail("BAD_PARAMS", "watch.start watch_id must not contain '.' (protocol §7.1)");
+            break;
+          }
+          if (!isVec3(q.min) || !isVec3(q.max)) {
+            fail("BAD_PARAMS", "watch.start min/max must be [x,y,z] int[3] (protocol §7.1)");
+            break;
+          }
+          if (q.origin !== undefined && !isVec3(q.origin)) {
+            fail("BAD_PARAMS", "watch.start origin must be [x,y,z] when set (protocol §7.1)");
+            break;
+          }
+          if (!q.upload_rule || typeof q.upload_rule !== "object" || Array.isArray(q.upload_rule)) {
+            fail("RULE_INVALID", "watch.start requires an upload_rule object (protocol §7.2)");
+            break;
+          }
+          if (q.tracks !== undefined && (typeof q.tracks !== "object" || Array.isArray(q.tracks))) {
+            fail("BAD_PARAMS", "watch.start tracks must be an object (protocol §7.1)");
+            break;
+          }
+          reply({
+            watch_id: q.watch_id, side: "server", non_air_count: 1845, entity_count: 3,
+            entity_count_truncated: false, truncated_chunks: [], seq: 0,
+          });
+          break;
+        }
+        case "watch.await": {
+          // §7.4: watch_id required; after_seq int >=0; wait_ms int 1..60000.
+          // Both optionals are OPTIONAL on the wire — the bridge applies defaults.
+          const q = req.params ?? {};
+          watchAwaitParams.push(q);
+          const unknown = Object.keys(q).filter((k) => !["watch_id", "after_seq", "wait_ms"].includes(k));
+          if (unknown.length) {
+            fail("BAD_PARAMS", `watch.await unknown params: ${unknown.join(",")} (protocol §7.4)`);
+            break;
+          }
+          if (typeof q.watch_id !== "string" || q.watch_id.length === 0) {
+            fail("BAD_PARAMS", "watch.await requires a non-empty watch_id (protocol §7.4)");
+            break;
+          }
+          if (q.after_seq !== undefined && (!Number.isInteger(q.after_seq) || q.after_seq < 0)) {
+            fail("BAD_PARAMS", "watch.await after_seq must be an integer >= 0 (protocol §7.4)");
+            break;
+          }
+          if (q.wait_ms !== undefined && (!Number.isInteger(q.wait_ms) || q.wait_ms < 1 || q.wait_ms > 60000)) {
+            fail("BAD_PARAMS", "watch.await wait_ms must be an integer 1..60000 (protocol §7.4)");
+            break;
+          }
+          if ((q.after_seq ?? 0) === 0) {
+            reply({ matched: true, next_seq: 1, overflowed: false, report: WATCH_REPORT });
+          } else {
+            // No report with seq > 1 yet: matched:false is the normal timeout
+            // branch (NOT a TIMEOUT error), next_seq still advances.
+            reply({ matched: false, next_seq: 1, overflowed: false });
+          }
+          break;
+        }
+        case "watch.snapshot": {
+          // §7.5: watch_id only; response data is the report itself.
+          const q = req.params ?? {};
+          watchSnapshotParams = q;
+          if (typeof q.watch_id !== "string" || q.watch_id.length === 0) {
+            fail("BAD_PARAMS", "watch.snapshot requires a non-empty watch_id (protocol §7.5)");
+            break;
+          }
+          const unknown = Object.keys(q).filter((k) => k !== "watch_id");
+          if (unknown.length) {
+            fail("BAD_PARAMS", `watch.snapshot unknown params: ${unknown.join(",")} (protocol §7.5)`);
+            break;
+          }
+          reply({ ...WATCH_REPORT, seq: 7, trigger_reason: "snapshot", trigger_trace: ["snapshot"] });
+          break;
+        }
+        case "watch.list": {
+          // §7.6: no params at all.
+          watchListParams = req.params ?? {};
+          if (Object.keys(watchListParams).length !== 0) {
+            fail("BAD_PARAMS", "watch.list takes no params (protocol §7.6)");
+            break;
+          }
+          reply({ watches: [{
+            watch_id: "explosion_test_01",
+            bounds: { min: [-15, 55, -15], max: [15, 85, 15] },
+            dimension: "minecraft:overworld", elapsed_ticks: 420, rule_type: "after_seconds",
+            report_mode: "summary_diff", auto_stop: true, buffered_reports: 1, seq: 1, phase: "running",
+          }] });
+          break;
+        }
+        case "watch.stop": {
+          // §7.7: watch_id only; returns {stopped, final_report}.
+          const q = req.params ?? {};
+          watchStopParams = q;
+          if (typeof q.watch_id !== "string" || q.watch_id.length === 0) {
+            fail("BAD_PARAMS", "watch.stop requires a non-empty watch_id (protocol §7.7)");
+            break;
+          }
+          const unknown = Object.keys(q).filter((k) => k !== "watch_id");
+          if (unknown.length) {
+            fail("BAD_PARAMS", `watch.stop unknown params: ${unknown.join(",")} (protocol §7.7)`);
+            break;
+          }
+          reply({ stopped: true, final_report: { ...WATCH_REPORT, trigger_reason: "after_seconds(3.0)" } });
           break;
         }
         default: fail("BAD_OP", `unknown op: ${req.op}`);
@@ -522,6 +673,168 @@ if (JSON.stringify(reloadParams) !== "{}") {
   throw new Error(`client.reload_resources must be sent with no params, got: ${JSON.stringify(reloadParams)}`);
 }
 console.log("mc_reload_resources ok:", JSON.stringify(reloadData));
+
+// ---------------------------------------------------------------------------
+// 13. Watch session engine (protocol §7): full script start -> await -> stop,
+// plus snapshot/list. Every step asserts the WIRE shape, not just the surface.
+// ---------------------------------------------------------------------------
+const UPLOAD_RULE = {
+  type: "after_seconds", seconds: 3.0, auto_stop: true,
+  note: "keep-me", // unknown root key (§7.2 forward compat) must survive transit
+};
+const TRACKS = {
+  blocks: { enabled: true, ignore_air_to_air: true, include_nbt: false, filter: ["minecraft:tnt", "mymod:*"] },
+  entities: { enabled: true, exclude_players: false, type_filter: ["minecraft:*"], fields: ["pos", "hp", "alive"], pos_epsilon: 0.25 },
+};
+send({ jsonrpc: "2.0", id: 20, method: "tools/call", params: {
+  name: "mc_watch_start", arguments: {
+    watch_id: "explosion_test_01",
+    min: [-15, 55, -15], max: [15, 85, 15], origin: [0, 64, 0],
+    dimension: "minecraft:overworld", tracks: TRACKS, upload_rule: UPLOAD_RULE,
+    report_mode: "summary_diff", detail_limit: 20, max_entity_count: 256,
+  } } });
+const watchStart = await wait(20);
+const wsData = JSON.parse(watchStart.result.content[0].text);
+if (watchStart.result.isError === true || wsData.watch_id !== "explosion_test_01" || wsData.side !== "server"
+    || wsData.non_air_count !== 1845 || wsData.entity_count !== 3
+    || wsData.entity_count_truncated !== false || wsData.seq !== 0
+    || JSON.stringify(wsData.truncated_chunks) !== "[]") {
+  throw new Error(`mc_watch_start failed: ${watchStart.result.content[0].text.slice(0, 300)}`);
+}
+const ws = watchStartParams;
+if (typeof ws.watch_id !== "string" || ws.watch_id.length === 0) {
+  throw new Error(`watch.start watch_id missing on the wire: ${JSON.stringify(ws)}`);
+}
+if (JSON.stringify(ws.min) !== JSON.stringify([-15, 55, -15])
+    || JSON.stringify(ws.max) !== JSON.stringify([15, 85, 15])
+    || JSON.stringify(ws.origin) !== JSON.stringify([0, 64, 0])) {
+  throw new Error(`watch.start min/max/origin must be 3-element arrays: ${JSON.stringify(ws)}`);
+}
+if (JSON.stringify(ws.tracks) !== JSON.stringify(TRACKS)) {
+  throw new Error(`watch.start tracks were rewritten/lost: ${JSON.stringify(ws.tracks)}`);
+}
+if (JSON.stringify(ws.upload_rule) !== JSON.stringify(UPLOAD_RULE)) {
+  throw new Error(`watch.start upload_rule was rewritten/lost: ${JSON.stringify(ws.upload_rule)}`);
+}
+if (ws.report_mode !== "summary_diff" || ws.detail_limit !== 20
+    || ws.max_entity_count !== 256 || ws.dimension !== "minecraft:overworld") {
+  throw new Error(`watch.start optional params shape wrong: ${JSON.stringify(ws)}`);
+}
+console.log("mc_watch_start ok:", JSON.stringify(ws.upload_rule), "seq:", wsData.seq);
+
+// 14. watch.await (first call): matched:true + report passthrough + cursor.
+send({ jsonrpc: "2.0", id: 21, method: "tools/call", params: {
+  name: "mc_watch_await", arguments: { watch_id: "explosion_test_01", after_seq: 0, wait_ms: 15000 } } });
+const await1 = await wait(21, 40000);
+const await1Data = JSON.parse(await1.result.content[0].text);
+if (await1.result.isError === true || await1Data.matched !== true || await1Data.overflowed !== false
+    || await1Data.next_seq !== 1 || !await1Data.report) {
+  throw new Error(`mc_watch_await(matched) failed: ${await1.result.content[0].text.slice(0, 300)}`);
+}
+const rep = await1Data.report;
+if (rep.watch_id !== "explosion_test_01" || rep.seq !== 1 || rep.report_mode !== "summary_diff"
+    || rep.trigger_reason !== "after_seconds(3.0)" || rep.side !== "server"
+    || rep.block_summary?.total_changed !== 138 || rep.block_summary?.max_radius_from_origin !== 4.24
+    || JSON.stringify(rep.block_summary?.sample_changes) !== JSON.stringify(WATCH_REPORT.block_summary.sample_changes)
+    || JSON.stringify(rep.entity_summary) !== JSON.stringify(WATCH_REPORT.entity_summary)) {
+  throw new Error(`watch.await report fields were reshaped/lost: ${JSON.stringify(rep).slice(0, 400)}`);
+}
+if (JSON.stringify(watchAwaitParams[0])
+    !== JSON.stringify({ watch_id: "explosion_test_01", after_seq: 0, wait_ms: 15000 })) {
+  throw new Error(`watch.await params shape wrong: ${JSON.stringify(watchAwaitParams[0])}`);
+}
+console.log("mc_watch_await(matched) ok: next_seq=", await1Data.next_seq, "trigger:", rep.trigger_reason);
+
+// 15. watch.await (after_seq=1): matched:false is the normal timeout branch.
+send({ jsonrpc: "2.0", id: 22, method: "tools/call", params: {
+  name: "mc_watch_await", arguments: { watch_id: "explosion_test_01", after_seq: 1, wait_ms: 1000 } } });
+const await2 = await wait(22, 20000);
+const await2Data = JSON.parse(await2.result.content[0].text);
+if (await2.result.isError === true || await2Data.matched !== false || await2Data.overflowed !== false
+    || await2Data.next_seq !== 1 || "report" in await2Data) {
+  throw new Error(`mc_watch_await(no match) failed: ${await2.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(watchAwaitParams[1])
+    !== JSON.stringify({ watch_id: "explosion_test_01", after_seq: 1, wait_ms: 1000 })) {
+  throw new Error(`watch.await cursor params shape wrong: ${JSON.stringify(watchAwaitParams[1])}`);
+}
+console.log("mc_watch_await(no match) ok: next_seq=", await2Data.next_seq);
+
+// Optional fields must NOT be invented locally: unset after_seq/wait_ms never
+// reach the wire (the bridge owns the §7.4 defaults).
+send({ jsonrpc: "2.0", id: 23, method: "tools/call", params: {
+  name: "mc_watch_await", arguments: { watch_id: "explosion_test_01" } } });
+const await3 = await wait(23, 20000);
+if (await3.result.isError === true) {
+  throw new Error(`mc_watch_await(defaults) failed: ${await3.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(watchAwaitParams[2]) !== JSON.stringify({ watch_id: "explosion_test_01" })) {
+  throw new Error(`watch.await invented defaults: ${JSON.stringify(watchAwaitParams[2])}`);
+}
+console.log("mc_watch_await(defaults) ok: params omit after_seq/wait_ms");
+
+// 16. watch.snapshot / watch.list: immediate report + active-session metadata.
+send({ jsonrpc: "2.0", id: 24, method: "tools/call", params: {
+  name: "mc_watch_snapshot", arguments: { watch_id: "explosion_test_01" } } });
+const snap = await wait(24);
+const snapData = JSON.parse(snap.result.content[0].text);
+if (snap.result.isError === true || snapData.trigger_reason !== "snapshot" || snapData.seq !== 7
+    || snapData.block_summary?.total_changed !== 138) {
+  throw new Error(`mc_watch_snapshot failed: ${snap.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(watchSnapshotParams) !== JSON.stringify({ watch_id: "explosion_test_01" })) {
+  throw new Error(`watch.snapshot params shape wrong: ${JSON.stringify(watchSnapshotParams)}`);
+}
+send({ jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "mc_watch_list", arguments: {} } });
+const list = await wait(25);
+const listData = JSON.parse(list.result.content[0].text);
+if (list.result.isError === true || listData.watches?.[0]?.watch_id !== "explosion_test_01"
+    || listData.watches?.[0]?.rule_type !== "after_seconds" || listData.watches?.[0]?.phase !== "running") {
+  throw new Error(`mc_watch_list failed: ${list.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(watchListParams) !== "{}") {
+  throw new Error(`watch.list takes no params, got: ${JSON.stringify(watchListParams)}`);
+}
+console.log("mc_watch_snapshot ok; mc_watch_list ok:", listData.watches[0].rule_type);
+
+// 17. watch.stop (end of the script): final_report passthrough.
+send({ jsonrpc: "2.0", id: 26, method: "tools/call", params: {
+  name: "mc_watch_stop", arguments: { watch_id: "explosion_test_01" } } });
+const stop = await wait(26);
+const stopData = JSON.parse(stop.result.content[0].text);
+if (stop.result.isError === true || stopData.stopped !== true
+    || stopData.final_report?.seq !== 1 || stopData.final_report?.trigger_reason !== "after_seconds(3.0)") {
+  throw new Error(`mc_watch_stop failed: ${stop.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(watchStopParams) !== JSON.stringify({ watch_id: "explosion_test_01" })) {
+  throw new Error(`watch.stop params shape wrong: ${JSON.stringify(watchStopParams)}`);
+}
+console.log("mc_watch_stop ok: final_report seq=", stopData.final_report.seq);
+
+// 18. zod bounds: wait_ms > 60000 must be rejected consumer-side, never sent.
+send({ jsonrpc: "2.0", id: 27, method: "tools/call", params: {
+  name: "mc_watch_await", arguments: { watch_id: "explosion_test_01", wait_ms: 60001 } } });
+const badWait = await wait(27);
+if (badWait.result?.isError !== true) throw new Error("mc_watch_await must reject wait_ms > 60000 (§7.4)");
+if (watchAwaitParams.length !== 3) throw new Error("rejected wait_ms still reached the bridge");
+console.log("mc_watch_await(wait_ms=60001) rejected consumer-side");
+
+// 19. Start with only the required fields: optional params must be omitted, not
+// filled with invented defaults (same discipline as client.screenshot / command
+// side). The wire object is exactly the four required keys.
+send({ jsonrpc: "2.0", id: 28, method: "tools/call", params: {
+  name: "mc_watch_start", arguments: {
+    watch_id: "minimal_watch", min: [0, 0, 0], max: [1, 1, 1],
+    upload_rule: { type: "after_seconds", seconds: 1 } } } });
+const start2 = await wait(28);
+if (start2.result.isError === true) {
+  throw new Error(`mc_watch_start(minimal) failed: ${start2.result.content[0].text.slice(0, 300)}`);
+}
+if (JSON.stringify(Object.keys(watchStartParams).sort())
+    !== JSON.stringify(["max", "min", "upload_rule", "watch_id"])) {
+  throw new Error(`watch.start invented optional defaults: ${JSON.stringify(watchStartParams)}`);
+}
+console.log("mc_watch_start(minimal) ok: only required keys on the wire");
 
 fs.unlinkSync(SHOT_PATH);
 proc.removeAllListeners("exit");

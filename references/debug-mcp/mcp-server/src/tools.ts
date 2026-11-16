@@ -428,4 +428,103 @@ export function registerTools(server: McpServer): void {
     },
     wrap(() => bridge.request("camera.clear")),
   );
+
+  // ---------------------------------------------------------------------------
+  // Watch session engine (protocol §7). Rule-driven observation: the bridge
+  // samples at t0, watches on the server thread and uploads one high-value
+  // report when the rule fires (t1); this consumer only carries the JSON.
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "mc_watch_start",
+    {
+      title: "Start a watch session",
+      description: "Start a RULE-DRIVEN watch session (protocol §7.1): the bridge snapshots the box at t0 (baseline) and keeps comparing on the server thread until the upload_rule fires, then returns one report (t1) with trigger_reason / trigger_trace. Pass upload_rule and tracks through verbatim — the rule tree (after_seconds / after_ticks / settle_quiet / on_condition / interval / event / any / all / sequence / repeat, max depth 4, <=16 nodes) is interpreted ENTIRELY by the bridge. Root-level auto_stop (default depends on rule type) closes the session right after the report; buffered reports stay awaitable for 60s. watch_id is caller-chosen, unique per bridge while any session/report is alive, and must not contain '.'. min/max are box corners (order-insensitive, volume <= 32768). Reports carry trigger_reason + trigger_trace; poll them with mc_watch_await using the returned seq as the cursor. NOTE: the reference client bridge only implements this on the integrated (single-player) server — multiplayer / dedicated servers without their own implementation return WORLD_NOT_LOADED. At most 8 active sessions per bridge.",
+      inputSchema: {
+        watch_id: z.string().min(1)
+          .describe('unique session id, ^[A-Za-z0-9_-]{1,64}$ (no "." — reserved for protocol namespaces)'),
+        min: intVec.describe("one box corner [x, y, z] (order-insensitive: the bridge normalises per axis)"),
+        max: intVec.describe("opposite box corner [x, y, z]"),
+        upload_rule: z.record(z.any()).describe("rule tree (protocol §7.2), passed through verbatim; e.g. {\"type\":\"after_seconds\",\"seconds\":3.0,\"auto_stop\":true}"),
+        origin: intVec.optional().describe("optional reference centre for report max_radius_from_origin; omit and the report field is null"),
+        dimension: z.string().optional().describe('dimension id like "minecraft:overworld" (default: player dimension / overworld)'),
+        tracks: z.record(z.any()).optional().describe("permissive object: tracks.blocks / tracks.entities config (protocol §7.1 table), passed through verbatim"),
+        report_mode: z.enum(["summary_diff", "timeline_events", "snapshot"]).optional().describe("report shape (default: summary_diff)"),
+        detail_limit: z.number().int().min(1).max(200).optional().describe("cap on sample_changes / impacts / events lists (default 20)"),
+        max_entity_count: z.number().int().min(1).max(512).optional().describe("max tracked entities (default 256); excess sets entity_count_truncated"),
+      },
+    },
+    wrap(async (args: any) => {
+      // Only the fields the caller actually set go on the wire, except the four
+      // required ones — the bridge owns every protocol default (§7.1 table).
+      const params: Record<string, any> = {
+        watch_id: args.watch_id, min: args.min, max: args.max, upload_rule: args.upload_rule,
+      };
+      if (args.origin !== undefined) params.origin = args.origin;
+      if (args.dimension !== undefined) params.dimension = args.dimension;
+      if (args.tracks !== undefined) params.tracks = args.tracks;
+      if (args.report_mode !== undefined) params.report_mode = args.report_mode;
+      if (args.detail_limit !== undefined) params.detail_limit = args.detail_limit;
+      if (args.max_entity_count !== undefined) params.max_entity_count = args.max_entity_count;
+      return bridge.request("watch.start", params, 15000);
+    }),
+  );
+
+  server.registerTool(
+    "mc_watch_await",
+    {
+      title: "Wait for the next watch report",
+      description: "Long-poll a watch session for the next report (protocol §7.4). Cursor discipline: pass after_seq = the next_seq returned last time (omit on the first call, meaning 0); only reports with seq > after_seq are returned. Response: {matched, next_seq, overflowed, report?}. matched=false is a NORMAL timeout (no rule fired within wait_ms), not an error — keep the returned next_seq and wait again. overflowed=true means the bridge evicted reports you never saw (gap you cannot recover; buffer holds at most 64 unconsumed reports). next_seq is useless across game restarts — reset the cursor after every hello. Sessions closed by auto_stop stay awaitable for 60s; after that WATCH_NOT_FOUND. Multiple connections may await the same session; the cursor lives in YOU, not on the server.",
+      inputSchema: {
+        watch_id: z.string().min(1).describe("session id returned by mc_watch_start"),
+        after_seq: z.number().int().min(0).optional().describe("cursor: only return reports with seq > after_seq (default 0)"),
+        wait_ms: z.number().int().min(1).max(60000).optional().describe("long-poll window in ms (default 10000, max 60000)"),
+      },
+    },
+    wrap(async (args: any) => {
+      const params: Record<string, any> = { watch_id: args.watch_id };
+      // Optional fields are omitted when unset so the bridge applies the §7.4
+      // defaults (after_seq=0, wait_ms=10000) — never invent a local default.
+      if (args.after_seq !== undefined) params.after_seq = args.after_seq;
+      if (args.wait_ms !== undefined) params.wait_ms = args.wait_ms;
+      // The bridge sleeps up to wait_ms (its own watchdog is wait_ms; a no-fire
+      // answer is matched:false, not TIMEOUT). Add 15s headroom on our side so a
+      // real bridge TIMEOUT surfaces as [MCB TIMEOUT] instead of our own cut-off.
+      return bridge.request("watch.await", params, (args.wait_ms ?? 10000) + 15000);
+    }),
+  );
+
+  server.registerTool(
+    "mc_watch_snapshot",
+    {
+      title: "Watch session: immediate diff report",
+      description: "Take an immediate t0->now diff report for a watch session WITHOUT touching its rule engine state (protocol §7.5): rules keep being evaluated on their own schedule, nothing is buffered and seq is not incremented. trigger_reason is \"snapshot\". Response data is the report object itself (same shape as a rule report). Read-only, any connection may call it — useful to peek at progress of long interval / repeat sessions. Unknown or fully expired session -> WATCH_NOT_FOUND.",
+      inputSchema: {
+        watch_id: z.string().min(1).describe("session id returned by mc_watch_start"),
+      },
+    },
+    wrap((args: any) => bridge.request("watch.snapshot", { watch_id: args.watch_id }, 15000)),
+  );
+
+  server.registerTool(
+    "mc_watch_list",
+    {
+      title: "List active watch sessions",
+      description: "List metadata of ACTIVE watch sessions on the bridge (protocol §7.6): watch_id, bounds, dimension, elapsed_ticks, root rule_type, report_mode, auto_stop, buffered_reports, seq, phase. Sessions closed but still inside the 60s report-retention window are NOT listed (their reports are still awaitable via mc_watch_await). Takes no parameters.",
+      inputSchema: {},
+    },
+    wrap(() => bridge.request("watch.list")),
+  );
+
+  server.registerTool(
+    "mc_watch_stop",
+    {
+      title: "Stop a watch session",
+      description: "Manually stop a watch session and release its baseline snapshot (protocol §7.7). ONLY the connection that created the session may stop it: any other connection gets BAD_PARAMS with a message containing \"not the owner\" and must drain reports with mc_watch_await instead. Response: {stopped: true, final_report} where final_report is the highest-seq buffered report (already consumed or not) or null when none exists. Reports remain awaitable for 60s after the stop; then WATCH_NOT_FOUND.",
+      inputSchema: {
+        watch_id: z.string().min(1).describe("session id returned by mc_watch_start"),
+      },
+    },
+    wrap((args: any) => bridge.request("watch.stop", { watch_id: args.watch_id }, 15000)),
+  );
 }
