@@ -9,7 +9,7 @@ Architecture:                     Generic / extensible
 Currently validated environments: （这是 reference 覆盖范围，不代表 Skill 的支持边界）
 - 已验证差异经验：Minecraft 1.21.1 ↔ 1.21.11 × Fabric / NeoForge（Mojmap，Java 21）
 - 版本卡（结构事实）：覆盖清单的唯一事实来源见 references/environments/versions/README.md
-- 实时调试基建（MCB v1）：协议规范 + Fabric 1.21.11 桥接实现（编译探针 + watch 部分运行时实测）+ 环境无关 MCP Server（含规则驱动 watch 会话），见 references/debug-mcp.md
+- 实时调试基建（MCB v1）：协议规范 + Fabric 1.21.11 桥接实现（编译探针 + watch/开发者模式部分运行时实测）+ 环境无关 MCP Server（含规则驱动 watch 会话、开发者模式确认弹窗），见 references/debug-mcp.md
 ```
 
 ## 解决什么问题

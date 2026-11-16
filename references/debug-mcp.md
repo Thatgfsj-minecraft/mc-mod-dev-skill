@@ -41,8 +41,9 @@ AI agent（你）
 
 1. 构建 `debug-mcp/bridge-mod/`（按版本卡 `bridge.md` 的已验证坐标），jar 放进开发实例 `mods/`。
 2. 构建 `debug-mcp/mcp-server/`，在你的 MCP 客户端注册（README 有配置样例）。
-3. 启动游戏。桥接监听 `127.0.0.1:25585`（改端口：JVM 参数 `-Dmcb.port=`）。
+3. 启动游戏。**bridge-mod 0.4.0+ 首次进入主页面会询问是否开启开发者模式**：点【是】后桥接监听 `127.0.0.1:25585`（改端口：JVM 参数 `-Dmcb.port=`）；点【否】保持纯原版。自动化启动必须带 `-Dmcb.devMode=true` 跳过确认屏（`-Dmcb.devMode=false` 则静默关闭）。
 4. 连通性自检：调 `mc_status`，能返回即链路正常；游戏未启动时工具返回 `BRIDGE_UNREACHABLE`，属预期。
+5. 若 `mc_status` 一直 `BRIDGE_UNREACHABLE`：先确认确认屏已点【是】或已带 `-Dmcb.devMode=true`；0.4.0+ 默认不监听端口，这不是链路故障。
 
 ## 4. 使用纪律
 
@@ -64,6 +65,7 @@ AI agent（你）
 12. **资源类改动走 L2 闭环**——`mc_reload_resources` 返回 `{reloaded,duration_ms}` 后**必须** `mc_logs` 搜缺失/加载错误，再截图；不要用按键注入模拟 F3+T（窗口焦点不可靠）。
 13. **`command.run` 的 `side` 要显式**——集成服断言用 `side:"server"`（可拿 `returnValue`/反馈）；多人世界客户端命令用 `side:"client"`（无回显，`resultText:""`、`returnValue:null`）；不要假设 `auto` 一定走服务端。
 14. **有观察窗口的实验用 watch 会话，不要手动 sleep 轮询**——`mc_watch_start` 先拍 t0 基准并声明 `upload_rule`，命中后一次 `mc_watch_await` 拿回结论；`next_seq` **逐份前进**（interval/repeat 的多份报告不会漏），`matched:false` 是正常超时；`auto_stop` 后报告保留 60s，过期才 `WATCH_NOT_FOUND`。`mc_watch_stop` 只有创建会话的连接能调；参考 Fabric 客户端桥接仅集成服可用（多人世界回 `WORLD_NOT_LOADED`）。规则/报告模式/字段见协议 §7。
+15. **开发者模式是启动开关**——0.4.0+ 默认不占端口、不改失焦暂停，必须先点确认屏【是】或带 `-Dmcb.devMode=true`；自动化漏传该参数的表现是“游戏正常但 MCP 一直 BRIDGE_UNREACHABLE”，不是桥接坏了。配置/优先级见 bridge-mod README 与 `e2e-testing.md`。
 
 ## 5. 为新环境写桥接（扩展流程）
 
@@ -75,7 +77,7 @@ AI agent（你）
 
 ## 6. 实战剧本（怎么把工具串成调试闭环）
 
-以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.2，bridge-mod 0.3.0，共 24 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
+以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.3，bridge-mod 0.4.0，共 24 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
 
 ### 6.1 搭场景 → 看结果
 
