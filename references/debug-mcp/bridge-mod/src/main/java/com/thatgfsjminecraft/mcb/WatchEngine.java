@@ -258,19 +258,26 @@ final class WatchEngine {
     // =====================================================================
     static JsonObject stopWatch(String watchId, Object owner) {
         WatchSession session;
+        JsonObject finalReport;
         synchronized (LOCK) {
             session = ACTIVE.get(watchId);
             if (session == null) {
                 throw new McbServer.OpException("WATCH_NOT_FOUND",
                         "unknown or already stopped watch session: " + watchId);
             }
+            if (!session.isOwnedBy(owner)) {
+                throw new McbServer.OpException("BAD_PARAMS",
+                        "not the owner of watch session: " + watchId);
+            }
+            // §7.7: close + final_report under the session lock, then leave the
+            // active registry in the same critical section. A concurrent tick
+            // either lands in the captured report or is skipped (§2.2).
+            finalReport = session.closeForStop("manual");
+            ACTIVE.remove(watchId);
+            RETAINED.put(watchId, session);
         }
-        if (!session.isOwnedBy(owner)) {
-            throw new McbServer.OpException("BAD_PARAMS",
-                    "not the owner of watch session: " + watchId);
-        }
-        JsonObject finalReport = session.finalReport();
-        stopSession(session, "manual");
+        releaseOnServer(session);
+        broadcastStopped(watchId, "manual");
         JsonObject data = new JsonObject();
         data.addProperty("stopped", true);
         data.add("final_report", finalReport);
@@ -412,21 +419,47 @@ final class WatchEngine {
      */
     static void stopSession(WatchSession session, String reason) {
         String watchId = session.watchId;
-        boolean stopped = false;
         synchronized (LOCK) {
-            if (ACTIVE.get(watchId) != session) return;
+            if (ACTIVE.get(watchId) != session) return; // already stopped: event pushed exactly once
             session.close(reason);
             ACTIVE.remove(watchId);
             RETAINED.put(watchId, session);
-            stopped = true;
         }
-        if (stopped) {
-            JsonObject data = new JsonObject();
-            data.addProperty("watch_id", watchId);
-            data.addProperty("reason", reason);
-            broadcast("watch.stopped", data);
-            McbMod.LOGGER.debug("[MCB] watch session {} stopped: {}", watchId, reason);
+        releaseOnServer(session);
+        broadcastStopped(watchId, reason);
+        McbMod.LOGGER.debug("[MCB] watch session {} stopped: {}", watchId, reason);
+    }
+
+    /**
+     * §7.9: release the baseline snapshot on the INTEGRATED-SERVER thread when
+     * one is alive, so a TCP/timer-thread stop can never null a sample under a
+     * running tick. When the server is gone, the synchronized release is safe
+     * (no tick is running and all reader paths are null-tolerant).
+     */
+    private static void releaseOnServer(WatchSession session) {
+        IntegratedServer server = Minecraft.getInstance().getSingleplayerServer();
+        if (server != null) {
+            if (server.isSameThread()) {
+                session.releaseSnapshot();
+                return;
+            }
+            if (!server.isStopped()) {
+                try {
+                    server.execute(session::releaseSnapshot);
+                    return;
+                } catch (RuntimeException ignored) {
+                    // shutting down between the check and the post
+                }
+            }
         }
+        session.releaseSnapshot();
+    }
+
+    private static void broadcastStopped(String watchId, String reason) {
+        JsonObject data = new JsonObject();
+        data.addProperty("watch_id", watchId);
+        data.addProperty("reason", reason);
+        broadcast("watch.stopped", data);
     }
 
     // =====================================================================

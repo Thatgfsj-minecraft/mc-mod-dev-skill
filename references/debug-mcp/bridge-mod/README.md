@@ -85,7 +85,8 @@
 2. **不强制加载区块**：采样先按 (chunkX, chunkZ) 用 `Level.isLoaded(pos)` 判缓存（纯查询），未加载区块整列跳过并记入 `truncated_chunks`；条件规则读单方块前同样先 `isLoaded`。**不要**先 `getBlockState` 再判断——`Level.getBlockState` 内部会 `getChunk(...)`。
 3. **`watch.await` 不占游戏线程**：`LOG_WAIT_POOL` 线程在 session monitor 上 `wait(remaining)`；服务端线程只在 append 报告后 `notifyAll()`；会话关闭立即唤醒并返回（不会白等满 `wait_ms`）。
 4. **采样节奏**（§7.10.3）：`settle_quiet` / `timeline_events` 逐 tick 全量采样；`interval` 只在报告边界采样；纯时间/条件规则只在 t0 与触发时各采一次；`tracks.blocks/entities.enabled=false` 时对应轨道不采样。
-5. **事件背压**：`watch.triggered` / `watch.stopped` 走 `McbServer.broadcastEvent` → 每连接一次非阻塞 `offer`；满则丢并计入 `status.droppedEvents`（与 log 事件共用 `McbLogCapture.onEventDropped()`）。可靠渠道永远是 `watch.await` 的 seq 游标。
+5. **关闭会话不跨线程释放快照**：`watch.stop` / owner 断连 / 空闲回收只把会话标记 closed 并移入保留区（`closeForStop` 在同一 session 锁内取 `final_report`，避免"报告已产生但 final_report 漏掉"的竞态）；`releaseSnapshot()` 由 `WatchEngine` 投递回集成服线程执行，只有服务端已不存在时才直接同步释放（所有读取路径都对 null 容错且先看 volatile `closed`）。锁顺序恒为 `engine LOCK → session 锁`，session 锁内不获取 LOCK。
+6. **事件背压**：`watch.triggered` / `watch.stopped` 走 `McbServer.broadcastEvent` → 每连接一次非阻塞 `offer`；满则丢并计入 `status.droppedEvents`（与 log 事件共用 `McbLogCapture.onEventDropped()`）。可靠渠道永远是 `watch.await` 的 seq 游标。
 
 ### 协议语义落点（易错项）
 

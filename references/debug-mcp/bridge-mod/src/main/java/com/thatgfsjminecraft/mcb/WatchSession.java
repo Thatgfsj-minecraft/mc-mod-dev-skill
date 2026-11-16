@@ -585,7 +585,11 @@ final class WatchSession {
             while (true) {
                 JsonObject found = firstReportAfter(afterSeq);
                 boolean overflowed = overflowed(afterSeq);
-                int next = Math.max((int) Math.min(Integer.MAX_VALUE, afterSeq), highestSeq);
+                // §7.4: next_seq is the latest raw seq in the buffer — always,
+                // even when there is no match. A consumer cursor that is ahead
+                // of the session gets the real latest seq back so it can align
+                // instead of drifting forever.
+                int next = highestSeq;
                 if (found != null) {
                     return awaitResponse(true, next, overflowed, found);
                 }
@@ -625,8 +629,16 @@ final class WatchSession {
     }
 
     private boolean overflowed(long afterSeq) {
-        if (reports.isEmpty()) return false;
-        long oldest = reports.peekFirst().get("seq").getAsLong();
+        long oldest;
+        if (reports.isEmpty()) {
+            if (highestSeq == 0) return false;
+            // Defensive: reports exist per highestSeq but the buffer is empty
+            // (should not happen — eviction keeps the newest 64). Treat the
+            // gap as starting right after the newest report.
+            oldest = (long) highestSeq + 1;
+        } else {
+            oldest = reports.peekFirst().get("seq").getAsLong();
+        }
         return oldest > afterSeq + 1;
     }
 
@@ -641,14 +653,47 @@ final class WatchSession {
     // =====================================================================
     // Lifecycle (§7.7 / §7.9)
     // =====================================================================
-    /** Must be called with the engine lock held (engine moves the session to retained). */
+    /**
+     * Mark the session closed. NOTHING that the server thread may still be
+     * reading is cleared here — sample release is a separate step
+     * ({@link #releaseSnapshot()}) so a stop from the TCP/timer thread can
+     * never null a sample under a running tick.
+     */
     void close(String reason) {
         synchronized (this) {
             if (closed) return;
-            closed = true;
-            closedReason = reason;
-            closedAtMs = System.currentTimeMillis();
-            // §7.9: release the baseline snapshot immediately; reports stay.
+            markClosed(reason);
+        }
+    }
+
+    /**
+     * §7.7 watch.stop: atomically mark the session closed and capture the
+     * highest-seq report. Closing first guarantees a concurrent server-tick
+     * {@code emitReport} either lands in the captured report or is skipped —
+     * no "report exists but final_report missed it" race.
+     */
+    JsonObject closeForStop(String reason) {
+        synchronized (this) {
+            if (!closed) markClosed(reason);
+            return reports.isEmpty() ? null : reports.peekLast();
+        }
+    }
+
+    private void markClosed(String reason) {
+        closed = true;
+        closedReason = reason;
+        closedAtMs = System.currentTimeMillis();
+        notifyAll();
+    }
+
+    /**
+     * §7.9: release the baseline snapshot / live samples. Runs on the
+     * integrated-server thread when one is alive (see WatchEngine); all reads
+     * of these fields are null-tolerant and gated by the volatile
+     * {@link #closed} flag, so the fallback direct call is safe too.
+     */
+    void releaseSnapshot() {
+        synchronized (this) {
             t0 = null;
             prev = null;
             current = null;
@@ -658,7 +703,6 @@ final class WatchSession {
             timelineEvents.clear();
             timelineCounts.clear();
             timelineTotal = 0;
-            notifyAll();
         }
     }
 
@@ -687,8 +731,7 @@ final class WatchSession {
         o.addProperty("watch_id", watchId);
         o.add("bounds", bounds.toJson());
         o.addProperty("dimension", dimensionName());
-        long elapsed = serverTick >= 0 ? serverTick - startTick
-                : Math.max(0, lastActivityTickHint);
+        long elapsed = serverTick >= 0 ? serverTick - startTick : 0L;
         o.addProperty("elapsed_ticks", Math.max(0, elapsed));
         o.addProperty("rule_type", rules.root.type);
         o.addProperty("report_mode", reportMode);
@@ -698,9 +741,6 @@ final class WatchSession {
         o.addProperty("phase", isClosed() ? "completed" : "running");
         return o;
     }
-
-    /** Last tick this session was evaluated on (fallback for watch.list). */
-    private long lastActivityTickHint = -1;
 
     String dimensionName() {
         Identifier id = levelKey.identifier();
@@ -774,7 +814,6 @@ final class WatchSession {
 
     /** Called by the engine tick pump to keep watch.list's elapsed_ticks fresh. */
     void noteTick(long tick) {
-        this.lastActivityTickHint = tick;
         this.currentTick = tick;
     }
 
