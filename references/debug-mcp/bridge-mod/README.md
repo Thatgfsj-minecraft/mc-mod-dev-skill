@@ -31,7 +31,8 @@
 | `McbClientOps.java` | 466 | §3.15–§3.18 / 0.4.0 弹窗排队 / §8 tick 泵 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；失焦暂停守卫标志 `autoPauseGuard()`；每 tick 泵 `McbWorldOps.onClientTick()` |
 | `McbScreenshot.java` | 147 | §3.11 / §3.16 | PNG 编码：§3.11 内联 base64；§3.16 `captureToFile` 帧末抓帧 → IO 线程写盘（渲染线程只读像素） |
 | `McbCamera.java` | 230 | §3.12 / §3.14 | 天眼自由相机：姿态/FOV 覆盖、UI 抑制、相机射线 `camera.look` |
-| `McbWorldOps.java` | 996 | §8 | **世界创建/清理**：`world.create` / `world.delete` 的客户端 tick 状态机（preparing→disconnecting→deleting→creating→awaiting_join→applying→done/failed）、4 预设地形、§8.3 gamerule 映射、`world.progress`、`.mcb-world.json` 标记、递归删除与安全判定、single-flight + 超时中止 |
+| `McbWorldOps.java` | 918 | §8 | **世界创建/清理**：`world.create` / `world.delete` 的客户端 tick 状态机（preparing→disconnecting→deleting→creating→awaiting_join→applying→done/failed）、§8.3 gamerule 应用、`world.progress`、`.mcb-world.json` 标记、递归删除与安全判定、single-flight + 超时中止 |
+| `McbWorldPresets.java` | 117 | §8.1 / §8.2 | 世界构造的纯构建半部（与状态机拆开守 1000 行/文件）：`LevelSettings`（game type/difficulty/cheats/gamerule）+ `WorldDimensions`（4 预设地形：超平坦层序 / 原版主世界 / 虚空） |
 | `mixin/CameraMixin.java` | 46 | §3.12 | `Camera.setup` TAIL 覆盖姿态 |
 | `mixin/GameRendererMixin.java` | 120 | v0.5.1 失焦保活 / §3.12 / §3.16 | FOV 覆盖（`getFov` TAIL）、第一人称手屏蔽、**帧末抓帧注入 + 失焦开关每帧校正**（`onFrameEnd`；**不用 `Redirect`**，原因见红线 7） |
 | `mixin/GuiMixin.java` | 58 | §3.12 | 天眼期间按元素屏蔽原版 HUD |

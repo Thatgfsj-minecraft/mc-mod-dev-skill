@@ -266,7 +266,7 @@
 
 ## v0.5.4 世界创建器 API 核实 + 运行时状态（0.5.0，§8）
 
-> 参考实现：`references/debug-mcp/bridge-mod` 的 0.5.0（新增 `McbWorldOps.java`，`McbServer`/`McbClientOps` 各加少量派发与 tick 泵）。验证分两轮：① `gradle build` 编译探针 + 1.21.11 Mojmap 反编译源码核实；② **2026-11-17 runClient 真机验收**（`-Dmcb.devMode=true`，Gradle 9.5.1 / JDK 21.0.13，窗口 :0）：4 预设建图、gamerule/时间/天气、世界内重建（clean_if_exists）、删除与错误码、`world.progress` 均实测通过，MCP 侧 `MCB_LIVE=1 node smoke.mjs` 与 `node integration.mjs` 也全绿。未跑项保持 `[ ]`，不得当成"已实测"。
+> 参考实现：`references/debug-mcp/bridge-mod` 的 0.5.0（新增 `McbWorldOps.java` 状态机 + `McbWorldPresets.java` 世界构造，`McbServer`/`McbClientOps` 各加少量派发与 tick 泵）。验证分两轮：① `gradle build` 编译探针 + 1.21.11 Mojmap 反编译源码核实；② **2026-11-17 runClient 真机验收**（`-Dmcb.devMode=true`，Gradle 9.5.1 / JDK 21.0.13，窗口 :0）：4 预设建图、gamerule/时间/天气、世界内重建（clean_if_exists）、删除与错误码、`world.progress` 均实测通过，MCP 侧 `MCB_LIVE=1 node smoke.mjs` 与 `node integration.mjs` 也全绿。未跑项保持 `[ ]`，不得当成"已实测"。
 > 源码位置：`/tmp/mc-src`（1.21.11 Mojmap 反编译；如被清理可从 loom 缓存的 `-sources.jar` 重新解压）。
 
 ### 已核实的 1.21.11 API（编译探针 + 反编译源码）

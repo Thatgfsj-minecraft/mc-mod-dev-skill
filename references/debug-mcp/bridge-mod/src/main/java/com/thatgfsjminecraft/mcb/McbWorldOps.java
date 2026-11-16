@@ -9,34 +9,17 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
-import net.minecraft.core.HolderGetter;
-import net.minecraft.core.HolderLookup;
-import net.minecraft.core.HolderSet;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Difficulty;
-import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.LevelSettings;
-import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.gamerules.GameRules;
-import net.minecraft.world.level.levelgen.FlatLevelSource;
-import net.minecraft.world.level.levelgen.WorldDimensions;
 import net.minecraft.world.level.levelgen.WorldOptions;
-import net.minecraft.world.level.levelgen.flat.FlatLayerInfo;
-import net.minecraft.world.level.levelgen.flat.FlatLevelGeneratorSettings;
-import net.minecraft.world.level.levelgen.placement.PlacedFeature;
-import net.minecraft.world.level.levelgen.presets.WorldPresets;
-import net.minecraft.world.level.levelgen.structure.BuiltinStructureSets;
-import net.minecraft.world.level.levelgen.structure.StructureSet;
 import net.minecraft.world.level.storage.LevelData;
 import net.minecraft.world.level.storage.LevelResource;
 
@@ -48,8 +31,6 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -579,9 +560,9 @@ final class McbWorldOps {
             Screen parent = new TitleScreen();
             mc.createWorldOpenFlows().createFreshLevel(
                     req.name(),
-                    buildLevelSettings(req),
+                    McbWorldPresets.levelSettings(req),
                     new WorldOptions(req.seed(), req.generateStructures(), false),
-                    provider -> buildDimensions(req, provider),
+                    provider -> McbWorldPresets.dimensions(req, provider),
                     parent);
         } catch (Throwable t) {
             fail(a, "INTERNAL", "createFreshLevel failed: " + t.getClass().getName() + ": " + t.getMessage());
@@ -656,82 +637,6 @@ final class McbWorldOps {
         }
         if (!a.markerDone) return;
         succeedCreate(a);
-    }
-
-    // =====================================================================
-    // World construction (§8.2 presets)
-    // =====================================================================
-
-    /** §8.1: LevelSettings carries game type, difficulty, cheats and initial gamerules. */
-    private static LevelSettings buildLevelSettings(CreateRequest req) {
-        GameRules rules = new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures());
-        // §8.3 mapping: 1.21.11 gamerules are snake_case and doFireTick is gone.
-        rules.set(GameRules.SPAWN_MOBS, req.doMobSpawning(), null);
-        rules.set(GameRules.KEEP_INVENTORY, req.keepInventory(), null);
-        // fire_tick=false -> fire_spread_radius_around_player=0 (1.21.11 has no doFireTick).
-        rules.set(GameRules.FIRE_SPREAD_RADIUS_AROUND_PLAYER, req.fireTick() ? -1 : 0, null);
-        if (req.lockTime() != null) rules.set(GameRules.ADVANCE_TIME, false, null);
-        if (req.lockWeather() != null) rules.set(GameRules.ADVANCE_WEATHER, false, null);
-        return new LevelSettings(req.name(), req.gameMode(), false, req.difficulty(),
-                req.allowCommands(), rules, WorldDataConfiguration.DEFAULT);
-    }
-
-    /** §8.1: the dimensions function handed to createFreshLevel. */
-    private static WorldDimensions buildDimensions(CreateRequest req, HolderLookup.Provider provider) {
-        return switch (req.preset()) {
-            case VANILLA_QUIET -> WorldPresets.createNormalWorldDimensions(provider);
-            case FLAT_CLEAN -> flatDimensions(provider, req.generateStructures(), false);
-            case BEDROCK_LAB -> flatDimensions(provider, req.generateStructures(), true);
-            case VOID_PLATFORM -> voidDimensions(provider);
-        };
-    }
-
-    /**
-     * Flat preset (bedrock_lab / flat_clean): superflat overworld only, all other
-     * dimensions stay vanilla.
-     *
-     * §8.3 note: WorldOptions.generateStructures already gates structure
-     * generation server-side, but the flat generator ALSO needs an explicit
-     * structure override set — otherwise FlatLevelSource falls back to "every
-     * registered structure set". So: generate_structures=false -> empty override
-     * set; true -> the vanilla superflat set (strongholds + villages).
-     */
-    private static WorldDimensions flatDimensions(HolderLookup.Provider provider, boolean structures,
-                                                  boolean bedrockOnly) {
-        HolderGetter<Biome> biomes = provider.lookupOrThrow(Registries.BIOME);
-        HolderGetter<PlacedFeature> features = provider.lookupOrThrow(Registries.PLACED_FEATURE);
-        HolderGetter<StructureSet> structureSets = provider.lookupOrThrow(Registries.STRUCTURE_SET);
-        Holder<Biome> plains = biomes.getOrThrow(Biomes.PLAINS);
-
-        Optional<HolderSet<StructureSet>> overrides = structures
-                ? Optional.of(HolderSet.direct(
-                        structureSets.getOrThrow(BuiltinStructureSets.STRONGHOLDS),
-                        structureSets.getOrThrow(BuiltinStructureSets.VILLAGES)))
-                : Optional.of(HolderSet.empty());
-
-        FlatLevelGeneratorSettings settings = new FlatLevelGeneratorSettings(
-                overrides, plains, FlatLevelGeneratorSettings.createLakesList(features));
-        if (bedrockOnly) {
-            settings.getLayersInfo().add(new FlatLayerInfo(3, Blocks.BEDROCK));
-        } else {
-            settings.getLayersInfo().add(new FlatLayerInfo(1, Blocks.BEDROCK));
-            settings.getLayersInfo().add(new FlatLayerInfo(2, Blocks.DIRT));
-            settings.getLayersInfo().add(new FlatLayerInfo(1, Blocks.GRASS_BLOCK));
-        }
-        settings.updateLayers();
-        return WorldPresets.createNormalWorldDimensions(provider)
-                .replaceOverworldGenerator(provider, new FlatLevelSource(settings));
-    }
-
-    /** void_platform: all-air superflat (void) — the platform itself is placed in preApply. */
-    private static WorldDimensions voidDimensions(HolderLookup.Provider provider) {
-        HolderGetter<Biome> biomes = provider.lookupOrThrow(Registries.BIOME);
-        Holder<Biome> plains = biomes.getOrThrow(Biomes.PLAINS);
-        FlatLevelGeneratorSettings settings = new FlatLevelGeneratorSettings(
-                Optional.of(HolderSet.empty()), plains, List.of());
-        settings.updateLayers(); // no layers -> all air -> voidGen
-        return WorldPresets.createNormalWorldDimensions(provider)
-                .replaceOverworldGenerator(provider, new FlatLevelSource(settings));
     }
 
     // =====================================================================
