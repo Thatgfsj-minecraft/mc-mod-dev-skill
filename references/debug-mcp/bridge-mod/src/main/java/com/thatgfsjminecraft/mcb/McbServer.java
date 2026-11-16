@@ -331,34 +331,62 @@ final class McbServer {
                     if (command.startsWith("/")) {
                         command = command.substring(1); // protocol: no leading slash; be tolerant
                     }
+                    // §2.1: side is an ADDITIVE param; absent means "auto", i.e.
+                    // exactly the 0.5.0 routing (server if there is an integrated
+                    // server, else the client command channel).
+                    String requestedSide = params.has("side") && params.get("side").isJsonPrimitive()
+                            ? params.get("side").getAsString() : "auto";
+                    if (!requestedSide.equals("auto") && !requestedSide.equals("server")
+                            && !requestedSide.equals("client")) {
+                        sendError(id, "BAD_PARAMS", "side must be one of auto, server, client");
+                        return;
+                    }
                     final String commandFinal = command; // lambdas below capture it
                     int timeoutMs = intParam(params, "timeoutMs", 10000, 60000);
                     var server = Minecraft.getInstance().getSingleplayerServer();
-                    if (server == null) {
-                        // §3.9 fallback 2: client in a multiplayer world →
-                        // send as a command message. Feedback is not capturable,
-                        // resultText is empty per protocol.
-                        var conn = Minecraft.getInstance().getConnection();
-                        if (conn != null) {
-                            // sendCommand takes the command WITHOUT a leading
-                            // slash (verified 1.21.11 javap); hop to the client
-                            // main thread since it enqueues a signed packet.
-                            Minecraft.getInstance().execute(() -> conn.sendCommand(commandFinal));
-                            JsonObject data = new JsonObject();
-                            data.addProperty("success", true);
-                            data.addProperty("resultText", "");
-                            data.add("feedback", new JsonArray());
-                            sendOk(id, data);
-                        } else {
-                            // §3.9 fallback 3: no world at all.
-                            sendError(id, "WORLD_NOT_LOADED", "no integrated server and not connected to any server world");
-                        }
+                    var conn = Minecraft.getInstance().getConnection();
+                    final String side;
+                    if (requestedSide.equals("server")) {
+                        side = "server";
+                    } else if (requestedSide.equals("client")) {
+                        side = "client";
+                    } else {
+                        side = server != null ? "server" : (conn != null ? "client" : null);
+                    }
+                    if (side == null) {
+                        // §3.9 fallback 3 / §2.1: no world at all.
+                        sendError(id, "WORLD_NOT_LOADED", "no integrated server and not connected to any server world");
+                        return;
+                    }
+                    if (side.equals("server") && server == null) {
+                        sendError(id, "WORLD_NOT_LOADED", "side=server needs an integrated (singleplayer) world");
+                        return;
+                    }
+                    if (side.equals("client") && conn == null) {
+                        sendError(id, "WORLD_NOT_LOADED", "side=client needs an active server connection");
+                        return;
+                    }
+                    if (side.equals("client")) {
+                        // Client command channel: sendCommand takes the command
+                        // WITHOUT a leading slash (verified 1.21.11 javap); hop to
+                        // the client main thread because it enqueues a signed
+                        // packet. The echo is not observable on this path, so the
+                        // result fields stay empty (§2.1).
+                        Minecraft.getInstance().execute(() -> conn.sendCommand(commandFinal));
+                        JsonObject data = new JsonObject();
+                        data.addProperty("success", true);
+                        data.add("returnValue", null);
+                        data.addProperty("resultText", "");
+                        data.add("feedback", new JsonArray());
+                        data.add("messages", new JsonArray());
+                        data.addProperty("side", "client");
+                        sendOk(id, data);
                         return;
                     }
                     // Commands run on the SERVER thread, not the client thread.
                     server.execute(() -> {
                         try {
-                            sendOk(id, McbHandlers.commandRun(server, commandFinal));
+                            sendOk(id, McbHandlers.commandRun(server, commandFinal, side));
                         } catch (OpException e) {
                             sendError(id, e.code, e.getMessage());
                         } catch (Exception e) {
@@ -367,12 +395,7 @@ final class McbServer {
                     });
                     // Watchdog: if the response never came (a hung command),
                     // report TIMEOUT — responded-set guarantees only one reply.
-                    LOG_WAIT_POOL.submit(() -> {
-                        try {
-                            Thread.sleep(timeoutMs);
-                            if (!closed) sendError(id, "TIMEOUT", "command.run exceeded " + timeoutMs + "ms");
-                        } catch (InterruptedException ignored) {}
-                    });
+                    watchdog(id, timeoutMs, "command.run");
                 }
                 case "log.history" -> {
                     long afterId = longParam(params, "afterId", 0);
@@ -446,6 +469,57 @@ final class McbServer {
                             if (!closed) sendError(id, "TIMEOUT", "screenshot.take exceeded 10000ms");
                         } catch (InterruptedException ignored) {}
                     });
+                }
+                case "screen.current" -> hop(id, McbClientOps::screenJson);
+                case "client.screenshot" -> {
+                    // §3.16: params validated here (BAD_PARAMS must be immediate,
+                    // not after a frame hop). Filename sanitizing/defaulting is
+                    // McbClientOps' job because it also feeds the file path.
+                    String rawFilename = null;
+                    if (params.has("filename") && !params.get("filename").isJsonNull()) {
+                        if (!params.get("filename").isJsonPrimitive()
+                                || !params.get("filename").getAsJsonPrimitive().isString()) {
+                            sendError(id, "BAD_PARAMS", "filename must be a string");
+                            return;
+                        }
+                        rawFilename = params.get("filename").getAsString();
+                    }
+                    boolean hideHud = false;
+                    if (params.has("hide_hud") && !params.get("hide_hud").isJsonNull()) {
+                        if (!params.get("hide_hud").isJsonPrimitive()
+                                || !params.get("hide_hud").getAsJsonPrimitive().isBoolean()) {
+                            sendError(id, "BAD_PARAMS", "hide_hud must be a boolean");
+                            return;
+                        }
+                        hideHud = params.get("hide_hud").getAsBoolean();
+                    }
+                    McbClientOps.requestScreenshot(rawFilename, hideHud,
+                            data -> sendOk(id, data), msg -> sendError(id, "INTERNAL", msg));
+                    // Frame-end capture + IO write: if rendering stalls (window
+                    // minimised during teardown, ...) the request must still get
+                    // exactly one answer (§2.2).
+                    watchdog(id, 10000, "client.screenshot");
+                }
+                case "client.pause_on_lost_focus" -> {
+                    // §3.17: enabled absent = read-only.
+                    Boolean enabled = null;
+                    if (params.has("enabled") && !params.get("enabled").isJsonNull()) {
+                        if (!params.get("enabled").isJsonPrimitive()
+                                || !params.get("enabled").getAsJsonPrimitive().isBoolean()) {
+                            sendError(id, "BAD_PARAMS", "enabled must be a boolean");
+                            return;
+                        }
+                        enabled = params.get("enabled").getAsBoolean();
+                    }
+                    final Boolean enabledFinal = enabled;
+                    hop(id, () -> McbClientOps.pauseToggle(enabledFinal));
+                }
+                case "client.reload_resources" -> {
+                    McbClientOps.reloadResources(data -> sendOk(id, data),
+                            msg -> sendError(id, "INTERNAL", msg));
+                    // §3.18: a full pack reload on a big modpack can take tens of
+                    // seconds; the 30s watchdog only fires when it truly hangs.
+                    watchdog(id, 30000, "client.reload_resources");
                 }
                 case "camera.eye" -> {
                     // §3.12 one-shot sky-eye: set pose -> next frame renders with
@@ -548,6 +622,23 @@ final class McbServer {
                 }
                 default -> sendError(id, "BAD_OP", "unknown op: " + op);
             }
+        }
+
+        /**
+         * Watchdog for ops whose answer is produced by a render/IO callback
+         * (§3.16 client.screenshot, §3.18 client.reload_resources): if that
+         * callback never fires (rendering stopped, resource manager wedged) the
+         * request would otherwise hang forever. The responded set makes this a
+         * no-op once the real answer is out (§2.2 exactly one response).
+         */
+        private void watchdog(long id, int timeoutMs, String what) {
+            LOG_WAIT_POOL.submit(() -> {
+                try {
+                    Thread.sleep(timeoutMs);
+                    if (!closed) sendError(id, "TIMEOUT", what + " exceeded " + timeoutMs + "ms");
+                } catch (InterruptedException ignored) {
+                }
+            });
         }
 
         /**

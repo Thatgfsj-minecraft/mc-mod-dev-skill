@@ -1,12 +1,16 @@
 package com.thatgfsjminecraft.mcb.mixin;
 
 import com.thatgfsjminecraft.mcb.McbCamera;
+import com.thatgfsjminecraft.mcb.McbClientOps;
 import net.minecraft.client.Camera;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -48,5 +52,59 @@ public abstract class GameRendererMixin {
         if (McbCamera.uiSuppressed()) {
             ci.cancel();
         }
+    }
+
+    // =====================================================================
+    // §1.2 focus-pause guard (client.screenshot / screen.current depend on it)
+    //
+    // Target signature verified against the decompiled 1.21.11 sources
+    // (/tmp/mc1211all): GameRenderer.render(DeltaTracker, boolean) contains
+    // exactly ONE pauseGame call, in the focus-loss branch:
+    //
+    //   if (!this.minecraft.isWindowActive() && this.minecraft.options.pauseOnLostFocus
+    //       && (!touchscreen || !mouseHandler.isRightPressed())) {
+    //       if (Util.getMillis() - this.lastActiveTime > 500L) {
+    //           this.minecraft.pauseGame(false);      // <- @Redirect target
+    //       }
+    //   }
+    //
+    // WHY ONLY THIS CALL SITE (hard constraint, spec §1.2 + pitfalls E3):
+    // Minecraft.pauseGame(boolean) is NOT focus-loss specific — the ESC key path
+    // also calls pauseGame(false) from KeyboardHandler. Cancelling/mixin-ing
+    // pauseGame(boolean) itself would silently break the ESC pause menu.
+    // Redirecting only the GameRenderer invocation leaves ESC untouched.
+    //
+    // WHY A PLAIN @Redirect and not MixinExtras @WrapOperation (pitfalls E2):
+    // this bridge mod is a zero-dependency reference implementation (no
+    // fabric-api, no MixinExtras on the classpath); real mods should prefer
+    // @WrapOperation for cross-mod compatibility.
+    // =====================================================================
+    @Redirect(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V",
+              at = @At(value = "INVOKE",
+                       target = "Lnet/minecraft/client/Minecraft;pauseGame(Z)V"))
+    private void mcb$guardFocusPause(Minecraft mc, boolean bl) {
+        if (McbClientOps.autoPauseGuard()) {
+            return; // automated run: losing OS focus must not freeze the game
+        }
+        mc.pauseGame(bl); // guard off (client.pause_on_lost_focus enabled=true) -> vanilla
+    }
+
+    // =====================================================================
+    // §3.16 client.screenshot frame-end hook.
+    //
+    // At RETURN of render(...) the frame is fully drawn: on 1.21.11 the vanilla
+    // HUD (gui.render) AND any open Screen are rendered INSIDE
+    // GameRenderer.render (verified: lines ~514-583 of the decompiled source),
+    // and the blit to the window happens later in Minecraft.runTick. Reading the
+    // render target here therefore captures exactly the frame the user sees,
+    // screenshot semantics included.
+    //
+    // Runs on the render thread = client main thread on 1.21.11; the actual
+    // capture/write is McbScreenshot.captureToFile (pixels here, IO on
+    // Util.ioPool()).
+    // =====================================================================
+    @Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At("RETURN"))
+    private void mcb$onFrameEnd(DeltaTracker deltaTracker, boolean bl, CallbackInfo ci) {
+        McbClientOps.onFrameEnd();
     }
 }
