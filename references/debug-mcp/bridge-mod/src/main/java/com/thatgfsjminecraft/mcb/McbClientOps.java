@@ -180,6 +180,15 @@ public final class McbClientOps {
 
     /** Called from MinecraftMixin at the end of every client tick. */
     public static void onClientTick() {
+        // §8 (v0.5.4): world.create / world.delete state machine. Must run on the
+        // client tick BEFORE the developer-mode prompt early-return below, because
+        // the prompt is a one-shot and this pump has to keep running for the whole
+        // lifetime of the process. It must never take the client tick down.
+        try {
+            McbWorldOps.onClientTick();
+        } catch (Throwable t) {
+            McbMod.LOGGER.warn("[MCB] world ops tick pump failed (ignored): {}", t.toString());
+        }
         if (devModePromptShown) return;
         try {
             if (McbMod.devModeMode() != McbDevModeConfig.Mode.ASK_ON_TITLE) return;

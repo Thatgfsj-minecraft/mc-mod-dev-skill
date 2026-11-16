@@ -1,8 +1,8 @@
 # mc-debug-bridge — 极简调试桥（Fabric 1.21.11 参考实现）
 
 > 适用环境：MC 1.21.11 · Fabric · Mojmap · JDK 21 · Loom 1.17.21（组织已验证坐标，见 `../../../environments/versions/1.21.11/README.md`）
-> 协议：[MCB v1](../protocol.md)（v0.5.1 起含 `screen.current` / `client.screenshot` / `client.pause_on_lost_focus` / `client.reload_resources` 与 `command.run` 的 `side`；v0.5.2 起含 §7 `watch.start/await/snapshot/list/stop` 五 op + `watch.triggered/watch.stopped` 两事件；v0.5.3 起默认不启动调试端口，由开发者模式确认弹窗或 `-Dmcb.devMode=true` 决定）
-> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 / v0.5.3 新增能力的运行时状态以版本卡为准）。
+> 协议：[MCB v1](../protocol.md)（v0.5.1 起含 `screen.current` / `client.screenshot` / `client.pause_on_lost_focus` / `client.reload_resources` 与 `command.run` 的 `side`；v0.5.2 起含 §7 `watch.start/await/snapshot/list/stop` 五 op + `watch.triggered/watch.stopped` 两事件；v0.5.3 起默认不启动调试端口，由开发者模式确认弹窗或 `-Dmcb.devMode=true` 决定；v0.5.4 起含 §8 `world.create` / `world.delete` 两 op + `world.progress` 事件，参考实现 0.5.0）
+> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 / v0.5.3 / v0.5.4 新增能力的运行时状态以版本卡为准；v0.5.4 的 `world.*` 目前是编译探针 + 反编译源码核实，**运行时待验证**）。
 
 这是 MCB v1 协议的**首个参考实现**。它存在的意义不是"装上就能用"（当然也能用），而是**作为模板**：任何 AI 拿着协议规范 + [PORTING.md](PORTING.md)，就应该能为其他 Loader / 其他版本写出等价物。
 
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | `McbMod.java` | 75 | §1 / v0.5.1 失焦保活 | 入口：装日志捕获、开 TCP 服务端、解析端口、启动 WatchEngine、**登记失焦保活**（`McbClientOps.scheduleFocusKeepAlive()`；首个 client tick 应用，见下） |
 | `McbLogCapture.java` | 220 | §3.7 / §3.8 / §2.3(log) | log4j2 Appender + 环形缓冲 + 增量读 + 订阅广播 |
-| `McbServer.java` | 898 | §1 / §2 / §3 / §7 分发 | TCP accept / NDJSON 读写 / 主线程跳转 / 响应唯一性 / 看门狗；`command.run` 的 `side` 路由；`watch.*` 参数校验与 owner token；`broadcastEvent` |
+| `McbServer.java` | 930 | §1 / §2 / §3 / §7 / §8 分发 | TCP accept / NDJSON 读写 / 主线程跳转 / 响应唯一性 / 看门狗（含 `world.*` 超时中止钩子）；`command.run` 的 `side` 路由；`watch.*` 参数校验与 owner token；`world.*` 参数校验入口；`broadcastEvent` |
 | `McbHandlers.java` | 740 | §3.2–§3.6 / §3.9 / §3.10 | 世界状态读取与**服务端路径**命令执行（全部假设在游戏主线程 / 服务端线程） |
 | `WatchSnapshot.java` | 846 | §7.1 / §7.3 / §7.10 | 服务端主线程采样与 diff：方块/实体快照、区块保护、filter/type_filter 匹配、三种报告段 JSON |
 | `WatchRules.java` | 896 | §7.2 | 规则树解析/强校验/逐 tick 状态机（5 基础 + any/all/sequence/repeat + 超时兜底） |
@@ -28,14 +28,15 @@
 | `McbDevModeConfig.java` | 197 | 0.4.0 三层优先级 | JVM 参数 > 记住的配置文件 > ASK；`config/mcb-bridge.properties` 读写；来源 Mod 名/ID 读取（`source_mod_name` 可覆盖），所有异常降级 ASK |
 | `McbDevModeScreen.java` | 96 | 0.4.0 确认屏 | 继承 `ConfirmScreen`；保存 parent；【是】激活并返回 parent、【否】直接返回；可选“记住本次选择”写入配置 |
 | `mixin/MinecraftMixin.java` | 30 | 0.4.0 弹窗排队 | Client Tick RETURN `Inject` → `McbClientOps.onClientTick()`；四重守门，单次启动只弹一次 |
-| `McbClientOps.java` | 457 | §3.15–§3.18 / 0.4.0 弹窗排队 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；以及失焦暂停守卫标志 `autoPauseGuard()` |
+| `McbClientOps.java` | 466 | §3.15–§3.18 / 0.4.0 弹窗排队 / §8 tick 泵 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；失焦暂停守卫标志 `autoPauseGuard()`；每 tick 泵 `McbWorldOps.onClientTick()` |
 | `McbScreenshot.java` | 147 | §3.11 / §3.16 | PNG 编码：§3.11 内联 base64；§3.16 `captureToFile` 帧末抓帧 → IO 线程写盘（渲染线程只读像素） |
 | `McbCamera.java` | 230 | §3.12 / §3.14 | 天眼自由相机：姿态/FOV 覆盖、UI 抑制、相机射线 `camera.look` |
+| `McbWorldOps.java` | 996 | §8 | **世界创建/清理**：`world.create` / `world.delete` 的客户端 tick 状态机（preparing→disconnecting→deleting→creating→awaiting_join→applying→done/failed）、4 预设地形、§8.3 gamerule 映射、`world.progress`、`.mcb-world.json` 标记、递归删除与安全判定、single-flight + 超时中止 |
 | `mixin/CameraMixin.java` | 46 | §3.12 | `Camera.setup` TAIL 覆盖姿态 |
 | `mixin/GameRendererMixin.java` | 120 | v0.5.1 失焦保活 / §3.12 / §3.16 | FOV 覆盖（`getFov` TAIL）、第一人称手屏蔽、**帧末抓帧注入 + 失焦开关每帧校正**（`onFrameEnd`；**不用 `Redirect`**，原因见红线 7） |
 | `mixin/GuiMixin.java` | 58 | §3.12 | 天眼期间按元素屏蔽原版 HUD |
 
-> 行数为量级（v0.5.3 开发者模式落地后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
+> 行数为量级（v0.5.4 world.* 落地后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
 
 ## 失焦保活（v0.5.1，为什么这样改）
 
@@ -109,6 +110,45 @@
 - **属性变化计入方块变化**：BlockState 变化（如 `lit` 翻转）算一次 changed，`transitions` 可能出现 `minecraft:foo -> minecraft:foo` 同 id 键（from/to 是 state id 投影）。
 - `watch.start` 被看门狗超时后若服务端回调迟到，会话可能已注册但客户端不知道 id；此类孤儿会话由 auto_stop / 空闲回收 / 生命周期清理消化（已知窗口）。
 
+## 世界创建/清理（MCB v1 §8，0.5.0 新增）
+
+> 协议：`protocol.md` §8.0–§8.8。动机：AI 自主测试不必再"手工建世界 → 进错生存世界被怪打死 → 村庄/动物/天气干扰观察"——一条 `world.create` 拉起**创造、无结构、无自然刷怪、锁正午晴天**的指定预设世界，测试结束用 `world.delete` 清理。`hello.protocol` 仍为 `1`（纯新增）；专用服务端实现可回 `CLIENT_ONLY`。
+
+### 新增 op 与实现位置
+
+| op | 协议 | 实现点 | 线程纪律 |
+|---|---|---|---|
+| `world.create` | §8.1 | `McbServer` dispatch（IO 线程参数校验）→ `McbWorldOps.startCreate` 登记单飞 → 客户端 tick 状态机 | TCP 只校验；disconnect 与 `createFreshLevel` 在**客户端主线程**；gamerule/时间/天气/出生点/虚空平台在**集成服线程**（`server.execute`）；删旧存档与 marker 写在**后台 IO 线程** |
+| `world.delete` | §8.4 | `McbServer` dispatch → `McbWorldOps.startDelete` | 安全判定 + 存在性在客户端线程；运行中且 `force` 时先 save-and-quit（等集成服 `isShutdown`）；递归删除在后台线程 |
+
+### 4 套预设（§8.2）
+
+| preset | 地形 | 实现 |
+|---|---|---|
+| `bedrock_lab` | 超平坦 3×基岩（从世界最低 Y 起） | `FlatLevelGeneratorSettings` + `FlatLayerInfo(3, BEDROCK)` → `FlatLevelSource`，结构集显式置空 |
+| `flat_clean` | 原版超平坦 1×基岩 + 2×泥土 + 1×草方块 | 同上（三层原版超平坦层序） |
+| `vanilla_quiet` | 原版主世界（seed 默认 12345） | `WorldPresets.createNormalWorldDimensions(provider)` |
+| `void_platform` | 全空气虚空 + (0,64,0) 处 9×9 基岩平台 | 空层 `FlatLevelGeneratorSettings`（全空气）；平台与出生点 (0,65,0) 由 `preApply` 在服务端铺好 |
+
+### §8.3 默认值 → 1.21.11 机制（实现记录）
+
+- 创造模式 + `allowCommands` → `LevelSettings`（`GameType` / `difficulty` / `allowCommands`）；难度 `normal` 保证 `/summon` 的敌对测试怪不消失，关自然刷怪用 gamerule `spawn_mobs=false`（**不用和平模式**）。
+- `lock_time` → gamerule `advance_time=false` + `ServerLevel#setDayTime(lockTime)`。
+- `lock_weather` → gamerule `advance_weather=false` + `ServerLevel#setWeatherParameters(...)` 直接清/置天气。
+- `fire_tick=false` → gamerule `fire_spread_radius_around_player=0`（**1.21.11 已无 `doFireTick`**；该规则 `-1`=不限蔓延、`0`=仅玩家贴身时蔓延，等价"基本关闭"）。
+- `keep_inventory` → gamerule `keep_inventory`。
+- `generate_structures` → `WorldOptions#generateStructures` **且** 超平坦显式结构覆盖集（空集 / 原版村庄+要塞集），只改 WorldOptions 不够。
+- 成功响应在"进世界 + gamerule/时间/天气/出生点已应用"之后才发；`spawn` 是 `MinecraftServer#getRespawnData().pos()`（1.21.11 的 `LevelData.RespawnData`，脚部坐标），不是请求参数复读。
+
+### 线程与安全红线（§8.7 + §8.4）
+
+1. **TCP 线程只做参数校验**；disconnect / `createFreshLevel` 会阻塞数秒（原版加载流程，预期行为），只允许在客户端主线程调用。
+2. **删除必须在世界关闭之后**：`Minecraft#disconnect` 内部 pump tick 直到 `IntegratedServer#isShutdown()`，此时 `LevelStorageAccess` 已释放；世界未关闭时回 `WORLD_IN_USE`（不硬删），递归删除放后台线程，IO 异常回 `INTERNAL`。
+3. **world.delete 安全红线**：只允许删 `mcb_` 前缀存档或目录内含 `.mcb-world.json`（world.create 成功后写入，含 preset/created_at/created_by）的存档；其余一律 `WORLD_DELETE_FORBIDDEN`——**force 不能绕过**，玩家手工世界永远不可通过本 op 删除。
+4. **单飞**：同一进程同一时间只允许一个 `world.create`/`world.delete`；并发请求回 `WORLD_IN_USE`。
+5. **看门狗**：`timeoutMs`（create 默认 120s / delete 默认 60s）超时发 `TIMEOUT` 并中止状态机；之后即使流程才完成也**不再发第二个响应**。
+6. **失败清理**：创建失败/超时会尽量 save-and-quit 回主菜单，释放存档锁，避免下一次 create 直接撞锁。
+
 ## 开发者模式确认弹窗（0.4.0 新增）
 
 默认启动不监听任何端口，也不修改任何原版设置。进入主页面后弹一次独立的原版风格 `ConfirmScreen`，询问“是否开启开发者模式？”；只有点【是】才调用幂等的 `McbMod.activateDevMode()`（TCP 服务 + WatchEngine + 失焦保活）。
@@ -153,7 +193,7 @@ source_mod_name=
 ```bash
 cd references/debug-mcp/bridge-mod
 ./gradlew build          # 需要 Gradle 9.5.1（见版本卡）；wrapper 未入库，可 `gradle wrapper` 生成
-# 产物: build/libs/mc-debug-bridge-0.4.0.jar
+# 产物: build/libs/mc-debug-bridge-0.5.0.jar
 ```
 
 把 jar 放进游戏实例的 `mods/` 文件夹即可。首次进入主页面会询问是否开启开发者模式：点【是】后桥接监听 `127.0.0.1:25585`（或 `-Dmcb.port=NNNN` 指定的端口）；点【否】保持纯原版。自动化 runClient/E2E 用 `-Dmcb.devMode=true` 跳过弹窗；只想彻底关闭用 `-Dmcb.devMode=false`。
@@ -174,3 +214,5 @@ cd references/debug-mcp/bridge-mod
 10. **Mixin 选择 + 注解版本陷阱**——本参考实现只用原版 Mixin 的 `Inject`（`Inject.at()` 在 sponge-mixin 0.17.0 / 0.17.4 都是 `At[]`，跨 Loader 版本稳定）；**不要用 `Redirect`**：它的 `at()` 在 0.17.0 是单值、0.17.4 是 `At[]`，编译端与运行端 Mixin 版本不一致时注解编码对不上，MixinExtras `preApply` 会抛 `ClassCastException: ArrayList cannot be cast to AnnotationNode` 导致启动崩溃（0.2.0 真实事故）。正式模组优先 MixinExtras 的 `WrapOperation` / `ModifyExpressionValue`（并且同样要核对运行时 Mixin 版本）。引用 `Options` / `Screen` 的 Mixin 必须放 `mcb.mixins.json` 的 `client` 数组。
 11. **开发者模式弹窗不得改 TitleScreen 布局、不得在 init 里硬切屏幕**——用 `McbDevModeScreen`（独立 ConfirmScreen）+ `McbClientOps.onClientTick()` 四重守门；保存弹窗前 screen 作为 parent 并在回答后还原，才能与其他主界面 Mod 共存而不互相顶掉。
 12. **激活必须幂等且延后；自动化必须带 `-Dmcb.devMode=true`**——`McbMod.activateDevMode()` 用 AtomicBoolean 只执行一次；点【否】/JVM=false 时不得占用端口或修改 `pauseOnLostFocus`。无人值守 runClient/E2E 不带该参数会停在确认屏。
+13. **world.delete 安全红线不可绕过**——只删 `mcb_` 前缀或含 `.mcb-world.json` 的存档；`force` 只表示"允许先把正在运行的目标世界安全退出"，**不表示允许删除玩家世界**。
+14. **world.* 不得在 TCP 线程碰游戏**——参数校验之后全部投递；`createFreshLevel`/`disconnect` 在客户端线程（会阻塞，属预期），递归删除在后台线程且必须先等集成服 `isShutdown`；gamerule/时间/天气/出生点必须 `server.execute(...)`。

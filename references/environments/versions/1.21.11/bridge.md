@@ -3,7 +3,7 @@
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
 > 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。v0.5.3 的开发者模式弹窗（0.4.0）已完成编译探针 + javap + runClient 双场景实测（部分人工交互项保持 `[ ]`，见"开发者模式弹窗运行时验证记录"）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。v0.5.3 的开发者模式弹窗（0.4.0）已完成编译探针 + javap + runClient 双场景实测（部分人工交互项保持 `[ ]`，见"开发者模式弹窗运行时验证记录"）。v0.5.4 的 §8 `world.create`/`world.delete`（0.5.0）本轮只做**编译探针 + 反编译源码核实**，**运行时待验证**（未启动游戏；见文末"v0.5.4 世界创建器 API 核实 + 运行时状态"）。
 
 ## 协议实现（参考实现位置）
 
@@ -263,4 +263,66 @@
 - [ ] `client.reload_resources`：`reloaded=true`、`duration_ms` 合理；改资源包后热重载生效；错误资源包 → 日志可检索（`Missing`/`Unable to load model`）
 - [ ] `command.run` `side`：`server` 返回 `returnValue` 为整数且 `feedback===messages`；`client` 路径 `resultText=""`/`messages=[]`/`returnValue=null`；`auto` 路由正确；失败路径 `success=false`
 - [ ] 超时路径：`client.screenshot` 10s / `client.reload_resources` 30s 看门狗各只回一个响应（`responded` 生效）
+
+## v0.5.4 世界创建器 API 核实 + 运行时状态（0.5.0，§8）
+
+> 参考实现：`references/debug-mcp/bridge-mod` 的 0.5.0（新增 `McbWorldOps.java`，`McbServer`/`McbClientOps` 各加少量派发与 tick 泵）。本轮只做 **`gradle build` 编译探针 + 1.21.11 Mojmap 反编译源码核实**，**未启动 runClient / 未进真实游戏**：下表运行时状态一律 `[ ]`，不得当成"已实测"。
+> 源码位置：`/tmp/mc-src`（1.21.11 Mojmap 反编译；如被清理可从 loom 缓存的 `-sources.jar` 重新解压）。
+
+### 已核实的 1.21.11 API（编译探针 + 反编译源码）
+
+| API | 结论 | 验证 |
+|---|---|---|
+| `WorldOpenFlows#createFreshLevel(String, LevelSettings, WorldOptions, Function<HolderLookup.Provider, WorldDimensions>, Screen)` | public（`WorldOpenFlows.java:81`）。内部完成 pack 加载 → 维度 bake → `Minecraft#doWorldLoad`；**失败不抛异常**，只 `LOGGER.warn` + `levelStorageAccess.safeClose()` + `minecraft.setScreen(parent)`（:104-108）→ 实现用"返回后 `getSingleplayerServer()==null`"判定失败 | `[实测：反编译源码]` |
+| `LevelSettings(String, GameType, boolean hardcore, Difficulty, boolean allowCommands, GameRules, WorldDataConfiguration)` | 7 参构造（`LevelSettings.java:19`）；`allowCommands()/getDataConfiguration()/gameType()/difficulty()` 均存在（:38/:60/:68） | `[实测：反编译源码 + 编译探针]` |
+| `new GameRules(FeatureFlagSet)` / `set(GameRule<T>, T, @Nullable MinecraftServer)` | 构造器在 `GameRules.java:96`，`set` 在 :109；`configure` 阶段传 `server=null` 合法（只改值不通知） | `[实测：反编译源码 + 编译探针]` |
+| gamerule 常量与包名 | 1.21.11 在 **`net.minecraft.world.level.gamerules.GameRules`**（不是旧的 `net.minecraft.world.level.GameRules`）：`ADVANCE_TIME`:20、`ADVANCE_WEATHER`:21、`FIRE_SPREAD_RADIUS_AROUND_PLAYER`:33、`KEEP_INVENTORY`:38、`SPAWN_MOBS`:73；**已无 `doFireTick`** | `[实测：反编译源码 + 编译探针]` |
+| `WorldOptions(long, boolean generateStructures, boolean bonusChest)` | 3 参公开构造（`WorldOptions.java:31`） | `[实测：反编译源码 + 编译探针]` |
+| `WorldPresets.createNormalWorldDimensions(provider)` / `createFlatWorldDimensions(provider)` | 均 public（`WorldPresets.java:60/:68`） | `[实测：反编译源码 + 编译探针]` |
+| `WorldDimensions#replaceOverworldGenerator(HolderLookup.Provider, ChunkGenerator)` | public（`WorldDimensions.java:61`）；只替换主世界，其余维度保留 | `[实测：反编译源码 + 编译探针]` |
+| `FlatLevelGeneratorSettings(Optional<HolderSet<StructureSet>>, Holder<Biome>, List<Holder<PlacedFeature>>)` | 公开构造（`FlatLevelGeneratorSettings.java:104`）；`getLayersInfo`:189 / `updateLayers`:197 / `createLakesList`:229；`updateLayers` 之后 `voidGen` 才正确（全空气 → void 世界） | `[实测：反编译源码 + 编译探针]` |
+| `FlatLevelSource#createState` 的结构集回退 | `structureOverrides()` 为 `Optional.empty()` 时回退"注册表里**全部**结构集"（`FlatLevelSource.java:44-48`）→ **超平坦关结构必须显式 `Optional.of(HolderSet.empty())`**，只靠 `WorldOptions.generateStructures=false` 不够稳 | `[实测：反编译源码]` |
+| `FlatLayerInfo(int height, Block block)` | 与 `FlatLevelGeneratorSettings.getDefault` 内部用法一致（1×基岩+2×泥土+1×草方块） | `[实测：反编译源码]` |
+| `ServerLevel#setDayTime(long)` / `setWeatherParameters(int clearTime, int weatherTime, boolean raining, boolean thundering)` / `getGameRules()` | 均 public（`ServerLevel.java:470 / :315 / :1772`）；`setWeatherParameters` 直接写 `ServerLevelData` 的 clear/rain/thunder 计数器 | `[实测：反编译源码 + 编译探针]` |
+| `MinecraftServer#setDifficulty(Difficulty, boolean)` / `getLevel(ResourceKey<Level>)` / `getWorldPath(LevelResource)` / `isReady()` / `isShutdown()` | 均 public（:1302 / :1202 / :1960 / :1423 / :1190） | `[实测：反编译源码 + 编译探针]` |
+| **1.21.11 世界出生点重构** | `getSharedSpawnPos()/setDefaultSpawnPos()` **已不存在**，改为 `MinecraftServer#getRespawnData()` 返回 `LevelData.RespawnData(GlobalPos, yaw, pitch)`（`LevelData.java:43`，`pos` 是**脚部**坐标，`DEFAULT` = `(OVERWORLD,(0,0,0))`）；写入口 `setRespawnData(RespawnData)`（:1710）/ `RespawnData.of(key, BlockPos, yaw, pitch)`（:64） | `[实测：反编译源码 + 编译探针]` |
+| 新世界出生点写入时机 | `MinecraftServer#setInitialSpawn` 在服务器初始化阶段写入（`MinecraftServer.java:478-520`）：先取 `sampler().findSpawnPosition()` 区块、`getSpawnHeight`，再按 `getSpawnPosInChunk` 微调；**虚空世界会落到 minY 附近**。玩家实际落点再由 `PlayerSpawnFinder.fixupSpawnHeight` 兜底（`PlayerSpawnFinder.java:96-115`：无碰撞则升到 maxY 再降到 minY 再上 1 格）→ 空世界约 `y=minY+1`，因此实现必须主动写 `RespawnData` + 平台 + 兜底传送 | `[实测：反编译源码]` |
+| `Minecraft#createWorldOpenFlows()` / `getLevelSource()` | public（`Minecraft.java:2023 / :1085`）；`getLevelSource()` 即 `LevelStorageSource`（`getLevelPath(String)`:312 / `levelExists`:304 / `isNewLevelIdAcceptable`:293 均 public） | `[实测：反编译源码 + 编译探针]` |
+| `Minecraft#disconnectFromWorld(Component)` / `disconnect(Screen, boolean)` | `disconnectFromWorld`:2086（本地世界 → 保存屏 → `TitleScreen`；多人 → `JoinMultiplayerScreen`）；`disconnect(Screen,boolean)`:2121 内部 `while(!integratedServer.isShutdown()) this.runTick(false)`，**阻塞客户端线程**，返回时 `MinecraftServer.stopServer` 已 `storageSource.close()`（:684）→ 存档锁释放 | `[实测：反编译源码]` |
+| `ServerPlayer#teleportTo(ServerLevel, double,double,double, Set<Relative>, float yaw, float pitch, boolean)` | public（`ServerPlayer.java:1666`）；`Entity#resetFallDistance()` 可用于传送后清零坠落距离 | `[实测：反编译源码 + 编译探针]` |
+| `Difficulty` / `GameType` 枚举 | `Difficulty`: peaceful/easy/normal/hard（`Difficulty.java:12-16，`byName`:46 可空）；`GameType`: survival/creative/adventure/spectator（`GameType.java:17-20，`getName()`:45） | `[实测：反编译源码 + 编译探针]` |
+| 零第三方依赖 | 0.5.0 仍不引入 fabric-api；`gradle build` 全绿，`mc-debug-bridge-0.5.0.jar` 内含 `McbWorldOps*.class` | `[实测：编译探针]` |
+
+### §8.3 两处必须写明的映射等价
+
+- **`fire_tick=false` → gamerule `fire_spread_radius_around_player=0`**：1.21.11 已删除 `doFireTick`。该整数规则语义为 `-1` = 不限制蔓延范围、`0` = 只有玩家贴身时才会蔓延（等价"基本关闭"）、正数 = 限制在该半径内；参考实现取 `0`，`fire_tick=true` 时取 `-1`。
+- **`do_mob_spawning=false` → gamerule `spawn_mobs=false`**，难度保持 `normal`（和平难度下 `/summon` 的敌对测试怪会立即消失，不能作为"安全"默认）。
+
+### 运行时状态（0.5.0，全部待验证 —— 本任务未启动游戏）
+
+- [ ] 4 预设各建图成功：`bedrock_lab` / `flat_clean` / `vanilla_quiet` / `void_platform`；响应 `spawn` 与平台表面/超平坦表面一致（`bedrock_lab` 约 y=-61）。
+- [ ] `vanilla_quiet` 固定 seed 12345 可复现；世界确实无村庄/要塞（`generate_structures=false`）。
+- [ ] `world.create` 成功后 `level.dat` 的 gamerule 落盘为 `spawn_mobs=false / advance_time=false / advance_weather=false / fire_spread_radius_around_player=0 / keep_inventory=true`，且时间锁定 6000、晴天。
+- [ ] 创造模式进入（默认）、`allow_commands` 生效（`command.run` 可用）；`difficulty=normal` 时 `/summon zombie` 不消失。
+- [ ] `void_platform`：平台 9×9 基岩在 Y=64、世界出生点 (0,65,0)；玩家未坠落死亡；survival + 已坠落场景被传送回 (0.5,65,0.5) 且坠落距离清零。
+- [ ] 在世界内调用 `world.create`：先 save-and-quit 到标题屏再建图；`clean_if_exists=true` 时旧存档被删后重建（fast-iteration：同名连续两轮）。
+- [ ] `world.delete`：`mcb_` 前缀存档删除成功、`deleted:true`、目录消失；运行中未 `force` → `WORLD_IN_USE`；`force=true` 先退出再删。
+- [ ] 安全红线：玩家手工存档（非 `mcb_` 且无 marker）→ `WORLD_DELETE_FORBIDDEN`；`world.create` 写入的 `.mcb-world.json` 能让非 `mcb_` 名字可删。
+- [ ] 错误码：`WORLD_NOT_FOUND` / `WORLD_ALREADY_EXISTS`（`clean_if_exists=false`）/ `PRESET_INVALID` / `BAD_PARAMS`（名字非法、`lock_time` 越界、`timeoutMs` 越界）。
+- [ ] 单飞：两个并发 `world.create` → 第二个 `WORLD_IN_USE`。
+- [ ] 看门狗：人为把 `timeoutMs` 压到 30000 并拖慢加载 → 只回一个 `TIMEOUT`（`responded` 生效），之后无第二个响应。
+- [ ] 失败清理：建图失败/超时后回主菜单；紧接着再次 `world.create` 不撞存档锁（`LevelStorageAccess` 已释放）。
+- [ ] `world.progress` 事件顺序（preparing→disconnecting?→deleting?→creating→awaiting_join→applying→done）与 `failed` 后必有错误响应。
+
+### 已知风险 / 与协议的偏差（显式记录）
+
+1. **`spawn` 不是请求参数复读**：取 `MinecraftServer#getRespawnData().pos()`。`void_platform` 由实现写入 (0,65,0)；超平坦/原版世界的 x/z 由 `setInitialSpawn` 的 `findSpawnPosition()` 决定（不保证正好是 0/8），协议只要求"实际可站出生点"。
+2. **`void_platform` 生存模式的坠落窗口**：平台与出生点在集成服 ready 后的首个 `server.execute` 里写入（通常早于玩家 join），但若玩家已被 `PlayerSpawnFinder` 放到 `minY+1` 并开始坠落，`applying` 阶段会把 `y<60` 的玩家传送回平台并 `resetFallDistance()`。创造模式（默认）无此风险；**survival + 慢机器**窗口未实测。
+3. **阻塞式创建期间客户端不响应**：`createFreshLevel` / `disconnect` 在客户端主线程阻塞数秒（原版加载屏，预期行为）；期间 TCP 线程仍可响应其他 op，但世界相关的 op 会等主线程。`world.progress` 的 `creating`→`awaiting_join` 之间可能因为主线程被占用而晚到。
+4. **`clean_if_exists` 的旧世界删除在后台线程**，删除失败回 `INTERNAL`（不是 `WORLD_IN_USE`）；删旧与建新之间状态机每 tick 推进一步。
+5. **`force` 语义**：只表示"允许先把正在运行的目标世界安全退出"，**不绕过删除安全红线**（§8.4）。
+6. **状态机单飞 + 超时中止**：超时响应后状态机被标记中止（下次 tick 清理并回主菜单），不会产生第二个响应；但若超时恰好发生在 `createFreshLevel` 阻塞期间，中止要等该调用返回后才生效（原版加载流程不可中断）。
+7. **`generate_structures=true` 的超平坦结构集**用原版 `STRONGHOLDS + VILLAGES`（`BuiltinStructureSets`）；数据包自定义结构集未接入。
+8. **删除顺序**：先做安全判定再判"正在运行"（协议未规定顺序）；即"玩家世界正在运行且未 force"会回 `WORLD_DELETE_FORBIDDEN` 而不是 `WORLD_IN_USE`，更保守。
+
 
