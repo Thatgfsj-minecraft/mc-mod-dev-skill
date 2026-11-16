@@ -7,7 +7,7 @@
  *    that was just proven closed. We must NOT let it fall back to the default
  *    25585: a live game may be listening there (a developer's runClient), and
  *    connecting to it would both touch the user's game and make the dead-bridge
- *    contract assertion flaky. Asserts: initialize, 19 tools, the exact
+ *    contract assertion flaky. Asserts: initialize, 24 tools, the exact
  *    BRIDGE_UNREACHABLE error contract, and zod argument validation.
  *  - MCB_LIVE=1: runtime acceptance against a real bridge (bridge-mod 0.2.1+).
  *    Raw TCP ping first (there is deliberately no mc_ping tool: ops map 1:1 to
@@ -147,8 +147,13 @@ const names = tools.result.tools.map((t) => t.name);
 console.log("tools:", names.join(", "));
 // v0.5.1: 15 -> 19 (screen.current / client.screenshot /
 // client.pause_on_lost_focus / client.reload_resources).
-if (names.length !== 19) throw new Error(`expected 19 tools, got ${names.length}`);
-for (const expected of ["mc_screen_current", "mc_client_screenshot", "mc_pause_on_lost_focus", "mc_reload_resources"]) {
+// v0.5.2: 19 -> 24 (watch.start / watch.await / watch.snapshot / watch.list /
+// watch.stop — protocol §7).
+if (names.length !== 24) throw new Error(`expected 24 tools, got ${names.length}`);
+for (const expected of [
+  "mc_screen_current", "mc_client_screenshot", "mc_pause_on_lost_focus", "mc_reload_resources",
+  "mc_watch_start", "mc_watch_await", "mc_watch_snapshot", "mc_watch_list", "mc_watch_stop",
+]) {
   if (!names.includes(expected)) throw new Error(`missing tool ${expected}`);
 }
 
@@ -226,6 +231,23 @@ if (LIVE) {
     throw new Error(`mc_screen_current dead-bridge contract broken: ${screenDead.text.slice(0, 200)}`);
   }
   console.log("new tools dead-bridge contract ok");
+
+  // Watch tools (protocol §7) are real bridge requests too — not registered
+  // stubs. mc_watch_list is the paramless one, so it hits the bridge directly.
+  const watchDead = await callTool(6, "mc_watch_list", {});
+  console.log("mc_watch_list ->", watchDead.text.slice(0, 140));
+  if (watchDead.result.isError !== true || !watchDead.text.startsWith("[MCB BRIDGE_UNREACHABLE]")) {
+    throw new Error(`mc_watch_list dead-bridge contract broken: ${watchDead.text.slice(0, 200)}`);
+  }
+  console.log("watch tool dead-bridge contract ok");
+
+  // zod must reject a fractional wait_ms (§7.4: integer 1..60000) consumer-side:
+  // the bad value must never reach the bridge.
+  const badWait = await callTool(7, "mc_watch_await", { watch_id: "smoke_watch", wait_ms: 2500.5 });
+  console.log("mc_watch_await(bad wait_ms) ->", badWait.text.slice(0, 140));
+  if (badWait.result.isError !== true) {
+    throw new Error("expected isError:true for non-integer wait_ms (§7.4)");
+  }
 }
 
 proc.removeAllListeners("exit"); // don't fast-fail on our own intentional kill

@@ -1,6 +1,6 @@
 {
   "name": "mc-debug-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server exposing a running Minecraft client via the MCB v1 debug bridge protocol (world state, live logs, commands, screenshot). Loader-agnostic reference consumer.",
   "type": "module",
   "main": "dist/index.js",
