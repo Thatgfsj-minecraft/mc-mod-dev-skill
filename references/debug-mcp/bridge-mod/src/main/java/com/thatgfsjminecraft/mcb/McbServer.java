@@ -89,6 +89,19 @@ final class McbServer {
         });
     }
 
+    /**
+     * §7.8: best-effort event fan-out used by WatchEngine for
+     * {@code watch.triggered} / {@code watch.stopped}. One non-blocking offer
+     * per connection; a full queue drops the event and is counted in
+     * status.droppedEvents (§2.3). Never call this from a path that may block.
+     */
+    static void broadcastEvent(JsonObject event) {
+        String line = GSON.toJson(event) + "\n";
+        for (Connection c : connections) {
+            c.sendEvent(line);
+        }
+    }
+
     private static void acceptLoop(ServerSocket serverSocket) {
         while (true) {
             try {
@@ -221,6 +234,14 @@ final class McbServer {
             closed = true;
             connections.remove(this);
             try { socket.close(); } catch (IOException ignored) {}
+            // §7.9: sessions owned by this connection get a 60 s protection
+            // window before being reclaimed as client_disconnected. The engine
+            // call is non-blocking (it only schedules the reclamation).
+            try {
+                WatchEngine.onConnectionClosed(this);
+            } catch (Throwable t) {
+                McbMod.LOGGER.warn("[MCB] watch owner-disconnect hook failed (ignored): {}", t.toString());
+            }
         }
 
         private void handleLine(String line) {
@@ -620,6 +641,50 @@ final class McbServer {
                         }
                     });
                 }
+                // ---------------------------------------------------------------
+                // §7 watch sessions (v0.5.2). Params are validated on the TCP
+                // thread; any world access is posted to the integrated-server
+                // thread inside WatchEngine (§7.10.1). "this" Connection is
+                // the owner token for watch.stop (§7.7) — never exposed.
+                // ---------------------------------------------------------------
+                case "watch.start" -> {
+                    WatchEngine.startWatch(params, this,
+                            data -> sendOk(id, data),
+                            (code, message) -> sendError(id, code, message));
+                    // §7.10.5: async path must still answer even if the server
+                    // thread callback never runs (server shutting down).
+                    watchdog(id, 10000, "watch.start");
+                }
+                case "watch.await" -> {
+                    String watchId = requireWatchId(params);
+                    long afterSeq = watchLongParam(params, "after_seq", 0, 0, Long.MAX_VALUE);
+                    long waitMs = watchLongParam(params, "wait_ms", 10000, 1, 60000);
+                    // §7.4: long poll runs on the IO pool, never the game thread.
+                    LOG_WAIT_POOL.submit(() -> {
+                        try {
+                            sendOk(id, WatchEngine.awaitWatch(watchId, afterSeq, waitMs));
+                        } catch (OpException e) {
+                            sendError(id, e.code, e.getMessage());
+                        } catch (Exception e) {
+                            sendError(id, "INTERNAL", e.getClass().getName() + ": " + e.getMessage());
+                        }
+                    });
+                    watchdog(id, (int) Math.min(waitMs + 5000L, 65000L), "watch.await");
+                }
+                case "watch.snapshot" -> {
+                    String watchId = requireWatchId(params);
+                    WatchEngine.snapshotWatch(watchId,
+                            data -> sendOk(id, data),
+                            (code, message) -> sendError(id, code, message));
+                    watchdog(id, 10000, "watch.snapshot");
+                }
+                case "watch.list" -> sendOk(id, WatchEngine.listWatches());
+                case "watch.stop" -> {
+                    String watchId = requireWatchId(params);
+                    // No world access needed: release + final_report are pure
+                    // session state, so this can answer on the TCP thread.
+                    sendOk(id, WatchEngine.stopWatch(watchId, this));
+                }
                 default -> sendError(id, "BAD_OP", "unknown op: " + op);
             }
         }
@@ -694,6 +759,33 @@ final class McbServer {
                 throw new OpException("BAD_PARAMS", "levelMin must be DEBUG/INFO/WARN/ERROR");
             }
             return min;
+        }
+
+        /** §7: watch_id is mandatory for every watch.* op that takes one. */
+        private static String requireWatchId(JsonObject params) {
+            if (!params.has("watch_id") || !params.get("watch_id").isJsonPrimitive()
+                    || !params.get("watch_id").getAsJsonPrimitive().isString()) {
+                throw new OpException("BAD_PARAMS", "watch_id is required and must be a string");
+            }
+            return params.get("watch_id").getAsString();
+        }
+
+        /** Strict integer range check: non-integer / out-of-range -> BAD_PARAMS (§7.4). */
+        private static long watchLongParam(JsonObject params, String name, long dflt, long min, long max) {
+            if (!params.has(name) || params.get(name).isJsonNull()) return dflt;
+            JsonElement el = params.get(name);
+            if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isNumber()) {
+                throw new OpException("BAD_PARAMS", name + " must be an integer");
+            }
+            double d = el.getAsDouble();
+            if (Double.isNaN(d) || Double.isInfinite(d) || d != Math.rint(d)) {
+                throw new OpException("BAD_PARAMS", name + " must be an integer");
+            }
+            long v = (long) d;
+            if (v < min || v > max) {
+                throw new OpException("BAD_PARAMS", name + " must be within " + min + ".." + max);
+            }
+            return v;
         }
 
         /** Per-axis normalization (§3.4): endpoints may come in any order. */

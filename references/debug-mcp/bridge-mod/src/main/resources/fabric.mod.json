@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "mcb",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "name": "MC Debug Bridge",
   "description": "AI debugging bridge: zero-dependency NDJSON TCP server exposing world state, live logs, commands and screenshot (MCB v1 protocol). Local-only, development use.",
   "environment": "client",

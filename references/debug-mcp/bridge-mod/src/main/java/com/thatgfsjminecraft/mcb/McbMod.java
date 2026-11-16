@@ -36,6 +36,14 @@ public class McbMod implements ClientModInitializer {
             LOGGER.error("[MCB] failed to open debug bridge on port {}: {}", port, e.toString());
         }
 
+        // §7 watch engine: daemon tick pump + session registry. A dev tool must
+        // never take the client down if this fails, hence the broad catch.
+        try {
+            WatchEngine.start();
+        } catch (Throwable t) {
+            LOGGER.warn("[MCB] watch engine failed to start (ignored): {}", t.toString());
+        }
+
         // §1.1 focus keep-alive: stop vanilla from pausing when the window loses
         // focus, so an automated run (terminal/MCP client holding OS focus) keeps
         // rendering and stays screenshot-able.

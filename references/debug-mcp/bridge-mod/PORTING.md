@@ -27,6 +27,10 @@
 | `Minecraft.getInstance().getMainRenderTarget()` | McbScreenshot | 26.x 去混淆化时代类名可能再变（见 `versions/1.21.11/vs-26.x-deobf.md`） |
 | `GameType.getName()` | McbHandlers | 返回的是字符串如 `creative` |
 | `Level#getDayTime / isRaining / isThundering` | McbHandlers | 长期稳定；维度 key：`level.dimension().identifier()`（1.21.11 已是 Identifier） |
+| `Level.isLoaded(BlockPos)` | WatchSnapshot | 1.21.11 实现 = 边界检查 + `getChunkSource().hasChunk(cx, cz)`（纯查询）；**`Level.getBlockState` 内部走 `getChunk(...)`，先查 isLoaded 才能保证不强制加载区块**。旧版/其他环境的等价物以反编译为准 |
+| `EntityGetter.getEntitiesOfClass(Class, AABB, Predicate)` | WatchSnapshot | 接口 default 方法，`Level` 实现 `getEntities(Entity, AABB, Predicate)` 后可用；含玩家（`ServerLevel.players()` 另行过滤）。`ServerLevel.getEntities()`（无参）是 **protected**，不要用 |
+| `ServerLevel.getEntity(int)` | WatchSnapshot | public，按运行时 id 查实体（§7.10.4 的 out_of_bounds/removed 辅助判定）；id 会复用，必须再校验 UUID |
+| `MinecraftServer.getTickCount() / getLevel(ResourceKey) / getPlayerList() / execute(Runnable)` | WatchEngine | 全部 public；tick 泵靠 `getTickCount()` 变化触发 `execute`。NeoForge 可直接用 `ServerTickEvents.END_SERVER_TICK` 省掉轮询 |
 | `Options.pauseOnLostFocus` | McbMod / McbClientOps | public boolean，默认 `true`；1.21.11 在 `Options` 里是普通字段（`Options.java:316`），`options.save()` 写回 options.txt。**字段名多版本稳定，但 Options 访问器/序列化方式随版本变**，以反编译为准 |
 | `Options.hideGui` | McbClientOps / McbScreenshot | public boolean，F1 开关（1.21.11 `Options.java:717`）；抓帧时临时置 true 再恢复 |
 | `GameRenderer.render(...)` 失焦分支里的 `minecraft.pauseGame(false)` | mixin/GameRendererMixin | **最容易变的一行**：方法签名（1.21.11 是 `render(DeltaTracker, boolean)`，旧版是 `render(float, long, boolean)`）、判定条件与 500ms 阈值都变过。1.21.11 在 `GameRenderer.java:465` 方法、`:466-472` 分支、`:470` 调用。**换版本必须重新反编译核实** |
@@ -68,6 +72,21 @@
 - `screenshot.take`、`client.screenshot`、`screen.current`、`client.pause_on_lost_focus`、`client.reload_resources` 必须按协议返回 `CLIENT_ONLY`；`player.info` 返回 `present:false`（玩家）。
 - 失焦保活是客户端概念，专用服务端没有对应开关——不要为了"代码统一"在服务端写 `Options` 相关逻辑。
 - 入口时机：监听 `ServerStarted` 事件再开端口。
+
+## watch 会话引擎移植注意（v0.5.2 §7，0.3.0）
+
+watch 的实现分四层（采样/diff → 规则树 → 会话 → 引擎），**只有引擎的入口时机随环境变，前三层是纯 JDK + 原版类**。按下面顺序移植：
+
+1. **权威侧必须是服务端**：`ClientLevel` 只有视距内实体且没有服务端 AI/完整 NBT，做不到 §7.10.4 的权威语义。Fabric 客户端桥接用 `Minecraft.getInstance().getSingleplayerServer()` + `server.getLevel(key)`；无集成服时按 §7.11 回 `WORLD_NOT_LOADED`（message 说明 needs an integrated server）。NeoForge 客户端集成服同理；专用服务端直接在 `ServerTickEvents` 里跑。
+2. **区块保护不能省**：先 `level.isLoaded(pos)` 或 `getChunkSource().hasChunk(cx, cz)` 判断，未加载整列跳过并记 `truncated_chunks`。`Level.getBlockState` 在未加载时会走 `getChunk(...)`（可能触发同步加载）——**先 getBlockState 再补判断是错的**。实体同理：实体消失时若其区块已卸载，是"未知"而不是 removed。
+3. **实体 API**：`level.getEntitiesOfClass(Entity.class, AABB, predicate)`（EntityGetter default，含玩家）取区域内实体；`ServerLevel.players()` 可补玩家/单独过滤；**不要**找 `ServerLevel.getEntities()`（protected）。类型 id 用 `BuiltInRegistries.ENTITY_TYPE.getKey(type)`；主键 UUID，runtimeId 只做辅助。
+4. **维度 key**：`ResourceKey.create(Registries.DIMENSION, Identifier.parse(dim))`；未指定维度时取玩家维度（server 线程：`server.getPlayerList().getPlayers()` 第一个 `ServerPlayer.level().dimension()`），无玩家回 `Level.OVERWORLD`。`server.getLevel(key) == null` → 维度未加载/不存在。
+5. **tick 泵**：Fabric 客户端无 ServerTick 事件（除非引入 fabric-api，本模板刻意不引入）→ 用 daemon 线程轮询 `Minecraft.getInstance().getSingleplayerServer().getTickCount()`，**变化时**才 `server.execute(() -> onServerTick(...))`，所有世界读取都在该回调里（§7.10.1）。NeoForge/服务端直接挂 tick 事件，不要保留轮询线程。
+6. **生命周期钩子**：`watch.stop`/auto_stop 释放 t0（立即）、报告保留 60s；连接关闭给 60s 保护窗口后清理（`client_disconnected`）；维度卸载（`server.getLevel(key)==null`）→ `dimension_unloaded`；集成服退出/切换到新实例 → `server_stopped`/`server_changed`；`interval`/`repeat` 空闲 300s → `idle_timeout`。事件 reason 取值固定（§7.8），不要自造。**关闭与释放要分开**：`watch.stop` 在 TCP 线程只置 closed + 在同一把 session 锁里取 `final_report`；`t0`/采样数组的清空投递回 tick 线程（服务端已不存在时才直接同步释放），否则 TCP 线程释放快照会和正在跑的 tick 抢 `t0`（NPE / 读到半释放状态）。锁顺序固定 `registry LOCK → session 锁`，session 锁内不要再取 LOCK。
+7. **长轮询别占 tick 线程**：`watch.await` 在 IO 池线程等会话 monitor（`wait/notifyAll`），服务端线程只追加报告 + notify；`watch.start` 的基准采样在服务端线程，用 `responded` 去重 + 10s 看门狗保证"恰好一个响应"（§2.2/§7.10.5）。
+8. **报告体积**：`detail_limit ≤200`、transitions/impacts/events 全部按 detail_limit 截断并置 `truncated/truncated_count`；方块实体 SNBT 再截 512 字符——这样单行稳定 <1 MiB。
+
+**多环境复用建议**：把 `WatchSnapshot` / `WatchRules` / `WatchSession` 视为服务端语义层（与 Loader 无关，只需 `ServerLevel`/实体/方块 API 等价物）；`WatchEngine` 的注册表/回收逻辑照搬，只替换"tick 来源 + 启动入口 + 事件广播出口"这三处。
 
 ## 完成后的沉淀义务
 

@@ -3,12 +3,12 @@
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
 > 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）同样是**编译探针 + javap 核实，运行时待验证**（见"watch 扩展 API 事实"与文末 watch 待补记录）。
 
 ## 协议实现（参考实现位置）
 
 - 参考实现：`references/debug-mcp/bridge-mod/`（协议规范：`references/debug-mcp/protocol.md`）
-- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.2.1.jar`（remapJar 正常，2026-11-17 01:58；jar 内含 `McbClientOps.class` 与新 `McbScreenshot`/`GameRendererMixin`）。`[实测：编译探针]`；本节 API 结论以编译探针 + 反编译源码为准。
+- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.3.0.jar`（remapJar 正常；jar 内含 `WatchSnapshot/WatchRules/WatchSession/WatchEngine.class`）。`[实测：编译探针]`；本节 API 结论以编译探针 + javap / 反编译源码为准。`0.2.1` 构建（2026-11-17 01:58）见历史记录。
 - **0.2.0 构建产物（00:54）存在致命缺陷、已废弃**：它的 `@Redirect` 注解在 0.18.4 运行时直接崩溃（见下方"0.2.0 启动崩溃与 0.2.1 修复"）。**不要把 0.2.0 当作可运行版本**。
 
 ## 已核实的 API（编译探针 / javap / 反编译源码，移植时直接对照）
@@ -142,6 +142,60 @@
 
 - **环境事实：X11 输入注入找游戏窗口**：`xprop -id <id> WM_CLASS` 才能认准游戏窗口——**顶层标题 "THATGFSJ" 其实是 GameViewer（远程串流客户端），不是 Minecraft**。真游戏窗口的 `WM_CLASS` 是 `Minecraft* 1.21.11`（1280x720 的 GLFW 子窗口）。按键必须用 **XTEST**（`libXtst.so.6` 的 `XTestFakeKeyEvent`）注入，LWJGL 忽略 `XSendEvent` 的合成事件。`[实测：X11 注入链路排障]`
 - **环境事实：直启游戏要自己拼 classpath**：从 `thatgfsj.json` 的 `libraries` 推导——**部分库（fabric-loader 等）没有 `downloads.artifact` 字段**，只有 Maven 坐标，得按 `group/artifact/version/artifact-version.jar` 拼路径；入口类是 `net.fabricmc.loader.impl.launch.knot.KnotClient`（不是 `Knot`，后者没有 main）。`[实测：直启脚本排障]`
+
+## watch 扩展 API 事实（0.3.0，§7，编译探针 / javap 核实）
+
+> 0.3.0 在 `bridge-mod` 落地 §7 的 watch 会话引擎（`WatchSnapshot` / `WatchRules` / `WatchSession` / `WatchEngine`，见 `debug-mcp/bridge-mod/README.md`）。下表是本轮为 watch **逐个核实过的 1.21.11 API**；仍属编译探针 / javap 结论，运行时待 Lead 真机补测（清单见文末）。
+
+| API | 结论 | 验证 |
+|---|---|---|
+| `Minecraft.getSingleplayerServer()` | 返回 `net.minecraft.client.server.IntegratedServer`（可空）；无集成服（多人/主菜单）时 watch 必须回 `WORLD_NOT_LOADED` | `[实测：javap]` |
+| `MinecraftServer.getTickCount()` | public int；tick 泵用它检测 tick 变化（变化时才投递一次 `server.execute`） | `[实测：javap]` |
+| `MinecraftServer.getLevel(ResourceKey<Level>)` | public；返回 `ServerLevel` 或 null（null = 维度未加载/不存在 → `WORLD_NOT_LOADED` / `dimension_unloaded`） | `[实测：javap]` |
+| `MinecraftServer.getPlayerList()` / `isRunning()` / `isStopped()` | 均 public；`execute(Runnable)` 继承自 `BlockableEventLoop`（线程安全投递），`isSameThread()` 也在该类 | `[实测：javap]` |
+| `PlayerList.getPlayers()` | `List<ServerPlayer>`；无 `dimension` 参数时取第一个玩家的维度（server 线程） | `[实测：javap]` |
+| `ServerPlayer.level()` | **override 返回 `ServerLevel`**（Entity 的 `level()` 返回 `Level`）；取玩家维度 `level().dimension()` | `[实测：javap]` |
+| `Level.isLoaded(BlockPos)` | public；实现 = 边界检查 + `getChunkSource().hasChunk(cx, cz)`（纯查询，**不加载**）。`Level.getBlockState` 内部走 `getChunk(...)`，所以必须先 isLoaded | `[实测：javap + 反编译源码]` |
+| `ServerChunkCache.hasChunk(int,int)` / `ChunkSource.hasChunk(int,int)` | public；区块保护的等价底层查询 | `[实测：javap]` |
+| `Level.getBlockState(BlockPos)` | 越界返回 `VOID_AIR`；未加载区块会走 `getChunk(...)`（可能触发加载）→ **禁止裸调** | `[实测：反编译源码]` |
+| `EntityGetter.getEntitiesOfClass(Class, AABB, Predicate)` | 接口 default 方法；`Level` 实现了 `getEntities(Entity, AABB, Predicate)` 后可直接用；**包含玩家**（`exclude_players` 自行过滤） | `[实测：javap]` |
+| `ServerLevel.getEntities()`（无参） | **protected**，不能用；按 §7.10.4 用 public 的 `getEntity(int)` 做 out_of_bounds/removed 辅助判定 | `[实测：javap]` |
+| `ServerLevel.getEntity(int)` / `players()` | 均 public；`players()` 返回 `List<ServerPlayer>` | `[实测：javap]` |
+| `Entity.getUUID() / getId() / getType() / isRemoved() / isAlive() / position() / blockPosition() / getName()` | 均 public；UUID 主键、runtimeId 仅辅助、type id = `BuiltInRegistries.ENTITY_TYPE.getKey(type)` | `[实测：javap]` |
+| `LivingEntity.getHealth()` | 返回 **float**（报告里转 double） | `[实测：javap]` |
+| `EntityType.is(TagKey<EntityType<?>>)` / `builtInRegistryHolder()` | 均 public；entity `#tag` 过滤用 | `[实测：javap]` |
+| `BlockState.getBlock()/isAir()/getFluidState()/getProperties()/getValue(Property)` | 均存在（`getProperties/getValue` 在 `BlockBehaviour.BlockStateBase` 继承的 `StateHolder` 上）；属性值 `toString()` | `[实测：javap]` |
+| `BlockPos.asLong()` / `asLong(int,int,int)` / `getX(long)` / `getY(long)` / `getZ(long)` | 均存在；采样数组按 `asLong` 键 + 解码做有序 merge（不建逐方块对象） | `[实测：javap]` |
+| `BlockEntity.saveWithFullMetadata(HolderLookup.Provider)` | `final CompoundTag`；快照 `include_nbt` 用 `level.registryAccess()`，SNBT 用 `tag.toString()` | `[实测：javap]` |
+| `ResourceKey.create(Registries.DIMENSION, Identifier.parse(dim))` / `Identifier.parse` | 均存在；`Registries.DIMENSION` 也在 | `[实测：javap]` |
+| `ResourceKey.location()` | **不存在**（取维度字符串用 `key.identifier().toString()`，与主卡结论一致） | `[实测：javap + 编译探针]` |
+| `AABB(double,double,double,double,double,double)` | 存在；区域实体查询包围盒 = 每轴 `[min, max+1)` | `[实测：javap]` |
+| 零第三方依赖 | 0.3.0 仍不引入 fabric-api / fastutil 等；只新增 4 个内部类，`gradle build` 全绿且 jar 内出现 `Watch*.class` | `[实测：编译探针]` |
+
+### watch 运行时待补记录（§7，全部 `[ ]`）
+
+> 与 v0.5.1 待补记录同纪律：未在活游戏上端到端跑过的一律保持 `[ ]`，不许把"编译通过"写成"运行时通过"。
+
+- [ ] `watch.start` 单人世界：`side:"server"`、`non_air_count`/`entity_count`/`truncated_chunks`/`seq:0` 合理；未加载区块不触发强制加载（观察区块加载计数/日志）
+- [ ] 多人世界 / 主菜单：`WORLD_NOT_LOADED`，message 含 `watch sessions require an integrated server (server-authoritative sampling)`
+- [ ] `watch_id` 含 `.` / 重复（含 60s 保留期内已关闭）/ 非法字符 → `BAD_PARAMS`；体积 >32768 → `TOO_LARGE`；第 9 个活跃会话 → `TOO_LARGE` + `watch session limit reached`
+- [ ] 规则校验：深度 >4、节点 >16、未知 type、缺必填、参数越界、正则非法、非 `log.line` 事件源 → `RULE_INVALID`
+- [ ] `after_seconds(3.0)` + TNT 爆炸：`watch.await` matched、`trigger_reason="after_seconds(3.0)"`、`summary_diff` 的 total_changed/bounds/radius/transitions/sample_changes 与肉眼一致；auto_stop → `watch.stopped(auto_stop)`
+- [ ] `settle_quiet`：连锁反应静默后结算；`max_wait_seconds` 到时 → `trigger_reason:"timeout"` + `timed_out:true`
+- [ ] `on_condition` 四种 kind：block_match / block_state / entity_removed（out_of_bounds 不计触发）/ entity_hp_below
+- [ ] `interval(5)`：`seq` 递增、`trigger_reason="interval(5)#n"`、增量对比上次报告；`max_count` 用尽 → 停止
+- [ ] `repeat` + `until`：每轮一份报告、轮次用尽/until 命中 → 会话结束、final_report 为最后一份
+- [ ] `any` / `all(latched)` / `all(simultaneous)` / `sequence` 组合与 `trigger_reason/trigger_trace`
+- [ ] `timeline_events`：事件顺序与 tick、pos_epsilon/hp_epsilon 降噪、`counts` 完整而 `events` 截断置 truncated
+- [ ] `snapshot` 模式：blocks 的 properties、`include_nbt:true` 的 SNBT、entities 的 fields 投影、detail_limit 截断
+- [ ] `watch.snapshot`：`seq` 不 +1、不入缓冲、不改变规则状态；已释放基准（auto_stop 后保留期）→ `WATCH_NOT_FOUND`
+- [ ] `watch.list`：bounds/dimension/elapsed_ticks/rule_type/auto_stop/buffered_reports/seq/phase 正确；保留期会话不列出
+- [ ] `watch.await`：无触发等到 `wait_ms` 返回 `matched:false`（非 TIMEOUT）；**逐份游标**（matched 时 `next_seq`=返回报告 seq，interval/repeat 多报告不被跳过；无匹配时=缓冲区最新 seq）；缓冲溢出 `overflowed:true`；60s 保留期内可继续取；过期 → `WATCH_NOT_FOUND`
+- [ ] `watch.stop`：owner 返回 `stopped:true` + `final_report`（空会话为 null）；非 owner → `BAD_PARAMS` 含 `not the owner`
+- [ ] 连接断开 60s 后清理并推 `watch.stopped(client_disconnected)`
+- [ ] 维度卸载 → `dimension_unloaded`；集成服退出 → `server_stopped`；换世界/新开存档 → `server_changed`
+- [ ] `interval` 会话 300s 无 await 且无新报告 → `watch.stopped(idle_timeout)`
+- [ ] 事件推送：`watch.triggered` 的 report 与 await 一致；慢客户端队列满时 `status.droppedEvents` 增长且游戏不卡
 
 ## 运行时验证记录（v0.5.1，待补 —— 可追加段落）
 
