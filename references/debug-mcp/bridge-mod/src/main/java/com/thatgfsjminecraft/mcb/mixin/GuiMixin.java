@@ -20,9 +20,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Suppressed elements (all private per-element renderers of Gui, verified on
  * 1.21.11): hotbar + health/food/xp decorations, status effects, chat +
  * actionbar, tab list, scoreboard sidebar, boss bar, subtitles, crosshair,
- * overlay (actionbar) message, demo + sleep overlays. Screen effects like
- * vignette/portal (renderCameraOverlays) are deliberately KEPT — they belong
- * to the world's look, not the UI.
+ * overlay (actionbar) message, demo + sleep overlays, F3 debug text, selected
+ * item name popup, saving indicator. Screen effects like vignette/portal
+ * (renderCameraOverlays) are deliberately KEPT — they belong to the world's
+ * look, not the UI.
+ *
+ * The player's own first-person HAND is NOT a Gui element: it is drawn by
+ * GameRenderer.renderItemInHand, so it is suppressed there instead.
  */
 @Mixin(Gui.class)
 public abstract class GuiMixin {
@@ -39,6 +43,12 @@ public abstract class GuiMixin {
             "renderOverlayMessage",
             "renderDemoOverlay",
             "renderSleepOverlay",
+            // F3 debug text (the "52 fps / XYZ / chunk" block)
+            "renderDebugOverlay",
+            // the big item name that pops up when you switch hotbar slot
+            "renderSelectedItemName",
+            // the little "saving level" spinner
+            "renderSavingIndicator",
     }, at = @At("HEAD"), cancellable = true)
     private void mcb$suppressVanillaHud(CallbackInfo ci) {
         if (McbCamera.uiSuppressed()) {

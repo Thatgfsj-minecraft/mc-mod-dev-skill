@@ -258,9 +258,13 @@
 退出自由相机，恢复角色视角；同时取消未完成的 `camera.eye`（见上）。
 
 - `status`（§3.2）新增可选字段 `cameraMode`：`"none" | "one-shot" | "persistent"`。
-- **UI 抑制（硬编码行为）**：相机 op 生效期间，桥接端屏蔽**原版 HUD 杂项**（物品栏/血量饥饿/经验、状态效果、聊天+动作栏、Tab 列表、计分板侧栏、Boss 条、字幕、准星、demo/sleep 覆盖层），截图干净；**mod 信息覆盖层（minihud、Xaero 路经点等）不受影响、照常渲染**。屏幕效果（vignette/传送门等）保留，属于世界观感。相机 op 结束（抓帧完成 / `camera.clear`）自动恢复。
+- **UI 抑制（硬编码行为）**：相机 op 生效期间，桥接端屏蔽**原版 HUD 杂项**（物品栏/血量饥饿/经验、状态效果、聊天+动作栏、Tab 列表、计分板侧栏、Boss 条、字幕、准星、demo/sleep 覆盖层、**F3 调试文字**、**物品名弹窗**、**保存指示器**），截图干净；**mod 信息覆盖层（minihud、Xaero 路经点、Jade 等）不受影响、照常渲染**。屏幕效果（vignette/传送门等）保留，属于世界观感。相机 op 结束（抓帧完成 / `camera.clear`）自动恢复。
   - 时序要求：相机覆盖必须在**像素读取完成之后**才撤销，否则抓到的是 HUD 已恢复的帧（一次性 `camera.eye` 曾因此带上物品栏）。
-- **Jade/WTHIT 信息栏不会跟随虚拟相机**（实测 + Jade 21.1.1 字节码验证）：Jade 的射线起点固定是 `player.getEyePosition()`，`perspectiveMode: CAMERA` 只把距离基准换成相机，不改起点。需要"镜头在看哪个方块"时用 §3.14 `camera.look`。
+  - **第一人称手臂不在 `Gui` 里**：它由 `GameRenderer.renderItemInHand` 在世界渲染阶段画，屏蔽它必须去 `GameRenderer`，在 `Gui` 里怎么改都清不掉。`[实测]`
+- **Jade/WTHIT 信息栏会跟随虚拟相机**（实测 + Jade 21.1.1 字节码验证）：`perspectiveMode: CAMERA` 下 Jade 用 `camera.position()` 当射线起点、`camera.forwardVector()` 当方向，方块高亮框会精确套在虚拟相机准星指着的方块上。
+  - ⚠️ 前置条件：Jade 的 `displayMode` 必须是 `LITE`；`TOGGLE`/`HOLD_KEY` 需要按住 HUD 键，AI 按不了。
+  - ⚠️ Jade 的射线在 tick 阶段算，比渲染滞后一帧；持续模式下无感知。
+  - 即便 Jade 不可用，§3.14 `camera.look` 仍可用来便宜地问"镜头正对着哪个方块"。
 - 实现要点：姿态覆盖与 FOV 覆盖**必须在渲染线程**完成（Fabric 参考实现走 Mixin：`Camera.setup` TAIL + `GameRenderer.getFov` TAIL）；抓帧复用 §3.11 的像素读取路径，在两帧之间读取仍持有虚拟相机画面的帧缓冲。
   - Mixin 注入若要改返回值，**必须写 `cancellable = true`**，否则 `cir.setReturnValue` 会抛 `CancellationException` 炸掉渲染线程（`GameRenderer.getFov` 曾因此崩溃）。
 
@@ -296,7 +300,7 @@
 
 ### 3.14 `camera.look`（天眼看向哪个方块，v1 后向兼容扩展）
 
-动机：Jade/WTHIT 的信息栏**不会跟随虚拟相机**（实测 + Jade 21.1.1 字节码：射线起点固定是 `player.getEyePosition()`）。但 AI 需要"镜头正对着哪个方块、它是什么状态"——比截图便宜得多，也不受区块外的渲染限制。
+动机：AI 需要"镜头正对着哪个方块、它是什么状态"——比截图便宜得多，也不受区块外的渲染限制。虽然 Jade 在 `displayMode: LITE` + `perspectiveMode: CAMERA` 下已经会跟随虚拟相机（见 §3.12），但 `camera.look` 给的是**结构化数据**（方块 id、属性、方块实体 NBT、精确坐标），不用去读图，也能在 Jade 不可用时兜底。
 
 参数：`x`,`y`,`z`（**双精度**，相机眼位）；二选一：
 

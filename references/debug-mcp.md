@@ -48,6 +48,13 @@ AI agent（你）
 4. **空间感知三段式**——`mc_map`（看布局）→ `mc_scan`（定位关键方块）→ `mc_block_get`（精查状态/NBT）。直接对大区域硬扫是浪费上下文。
 5. **命令失败要读回执**——`mc_command` 返回 `resultText`（命令反馈原文），setblock 打错坐标、give 配错 id 都会在这里显形，不要假设成功。
 6. **修改场景用一次性世界**——命令是四级权限，`kill @e` / 大范围 fill 都执行得出去；在专用测试存档里玩（与 e2e-testing.md 的世界纪律一致）。
+7. **能"看"就别"动"**——角色不会飞（重力会把他拽下去），移动玩家前先探目标下方有没有可站方块，没有就垫玻璃；`mc_move_player` 已把这条纪律硬编码进桥接端，优先用工具而不是手写命令。只是想看某个位置/方块的外观时，用天眼 `mc_camera_eye`——玩家根本不动，也就没有坠落风险。
+8. **天眼的三条工作流**：
+   - `mc_camera_look`（"镜头在看哪个方块"）→ 比截图便宜得多，返回命中方块的 id/属性/方块实体 NBT，**优先用它**；
+   - `mc_camera_eye`（一次性出图）→ 需要看**外观/渲染效果**时才用；
+   - `mc_camera_set` + `mc_screenshot`（持久模式多次取景）→ 需要从多个角度反复观察同一目标时用。
+   - ✅ mod 信息栏（Jade）在 `displayMode: LITE` + `perspectiveMode: CAMERA` 下**会跟随虚拟相机**，高亮框套在准星指的方块上——但要结构化数据（id/属性/NBT）还是用 `mc_camera_look` 更省事。
+9. **天眼拍到虚空就是区块没加载**——响应里的 `chunks.centerLoaded` / `loadedNearby` 会如实报；`centerLoaded=false` 时先 `mc_command` 跑 `forceload add <cx> <cz>` 再拍。
 
 ## 5. 为新环境写桥接（扩展流程）
 
@@ -55,3 +62,57 @@ AI agent（你）
 2. 按 SKILL.md §7 对清单逐个核实 API，实现桥接（传输层基本原样搬，世界 API 按目标映射重写）。
 3. 验证：编译通过 + 行为测试（至少覆盖 `ping`/`status`/`block.get`/`log.history`/`command.run` 五条主路径）。
 4. 按 `references/README.md` 沉淀：目标版本卡目录新建 `bridge.md`（写明验证方式），更新覆盖表，实现放进 `debug-mcp/bridge-mod-<loader>-<版本>/`。
+
+## 6. 实战剧本（怎么把工具串成调试闭环）
+
+以下是真实调试中验证有效的调用序列。工具名以参考实现（15 个 `mc_*` 工具）为准，其他实现按协议 op 对应。
+
+### 6.1 搭场景 → 看结果
+
+```
+mc_command("setblock x y z minecraft:glass")   # 造环境（服务端权威，避免幽灵方块）
+mc_scan_blocks({min,max,filter})               # 确认方块真的到位
+mc_camera_look({x,y,z, lookAt:[tx,ty,tz]})     # 镜头对准它，拿到 id/属性/NBT
+mc_camera_eye({x,y,z, yaw, pitch})             # 需要看外观/渲染时才截图
+```
+
+**要点**：`camera.look` 比截图便宜得多，能回答"这是什么东西、状态如何"；只有当问题涉及**渲染外观**（贴图、颜色、UI 叠加）时才值得花 token 截图。
+
+### 6.2 角色交互类任务
+
+```
+mc_move_player({x,y,z})                        # 探地 + 垫玻璃 + 传送，全部硬编码
+mc_command("...")                              # 在安全位置执行交互
+mc_camera_eye({...})                           # 旁观效果，不动角色
+```
+
+**要点**：需要"放置/破坏/交互"才移动角色；只为了"看"就用天眼。移动后如果发现角色状态被污染（半血、坠落中），先 `mc_status` 查 `player` 字段。
+
+### 6.3 排查"渲染不对"类问题
+
+```
+mc_camera_look({x,y,z, lookAt:[tx,ty,tz]})     # 1. 先确认目标方块的状态（数据层）
+mc_camera_eye({x,y,z, yaw, pitch})              # 2. 再看画面（渲染层）
+```
+
+**要点**：数据层与渲染层分开看——如果 `camera.look` 返回的状态是对的但画面不对，那是渲染/客户端同步问题；反之则是方块实体逻辑问题。这个二分法能省掉大量盲目重试。
+
+### 6.4 观察自动化流程（漏斗/熔炉/坩埚循环）
+
+```
+mc_camera_set({x,y,z, yaw, pitch, fov})        # 持久模式，每帧覆盖姿态
+mc_screenshot({})                              # 多次取景，不同角度/距离
+mc_camera_clear({})                            # 用完恢复
+```
+
+**要点**：持久模式比反复 `camera.eye` 更省——一次布好机位，连拍多张对比。`camera.clear` 必须调用，否则视角一直是虚拟相机（`status.cameraMode` 会显示 `persistent`，可用来确认状态）。
+
+### 6.5 常见异常与对策
+
+| 现象 | 原因 | 对策 |
+|---|---|---|
+| 天眼截图是纯黑/虚空 | 相机处区块未加载 | 看 `chunks.centerLoaded`；`mc_command` 跑 `forceload add <cx> <cz>` 后重拍 |
+| 截图带物品栏/血条 | 抓帧时 UI 抑制已撤销（时序问题） | 属桥接端 bug；确认相机覆盖是否活到像素读完 |
+| 改了 JAR 但游戏里没生效 | 游戏运行中不能替换 JAR | 退出游戏 → 替换 `mods/*.jar` → 重启 |
+| `mc_command` 报权限错 | 单人世界外无 OP | 确认实例是单人/作弊模式；命令需四级权限 |
+| 工具报 `BRIDGE_UNREACHABLE` | 游戏没开或端口不对 | `mc_status` 探测；端口默认 25585（`-Dmcb.port=` 改） |
