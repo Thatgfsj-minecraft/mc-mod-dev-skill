@@ -105,12 +105,12 @@ presetClientOptions("run", {
 - **不要整文件覆盖**：`options.txt` 还有几十上百个键（键位、音量、语言…），覆盖会冲掉用户配置；只增改需要的键。
 - Loom 默认 `runDir` 是项目根的 `run/`；如果项目在 `build.gradle` 的 `runs { client { runDir ... } }` 里改过目录，脚本路径要跟着改。
 - **F3+P 是原版切换键**（1.21.11 `KeyboardHandler.handleDebugKeys` 里 `options.keyDebugFocusPause` 切换 `pauseOnLostFocus` 并 `options.save()`，[实测：1.21.11 反编译]），但**自动化不要靠按键注入**——窗口焦点、键码、输入法都不可靠。用 `options.txt` 预置 + 运行时 `mc_screen_current` 读 `pause_on_lost_focus` 核实；需要临时恢复原版行为做兼容测试时用 `mc_pause_on_lost_focus({enabled:true})`。
-- **桥接 Mod 0.2.0+ 启动会强制关一次**（`pauseOnLostFocus=false` + 失焦自动暂停守卫，见 `environments/versions/1.21.11/bridge.md`），这是最后一道保险；但只覆盖装了该 Mod 的客户端，纯原版客户端仍要靠 options.txt。
+- **桥接 Mod 0.2.1+ 启动会强制关一次**（`pauseOnLostFocus=false`，运行期还会每帧校正，见 `environments/versions/1.21.11/bridge.md`），这是最后一道保险；但只覆盖装了该 Mod 的客户端，纯原版客户端仍要靠 options.txt。
 - **options.txt 是"建议预置"而非硬保证**：原版在退出/改设置时会**重写整个文件**（[实测：1.21.11 反编译] `Options.save` 遍历全部选项写盘）。若有人在游戏里按了 F3+P、或兼容性测试把 `pause_on_lost_focus` 打开过，下次写盘会保留该值——所以每次启动前都要重写，而不是只在镜像里预置一次。
 
 ## 运行序列
 
-> 客户端侧自动化（`runClient`/IDE 开发实例）启动前，先按上一节「客户端 run 目录预置」写入 `run/options.txt`；桥接 Mod 0.2.0+ 启动时还会再强制关一次失焦暂停（双保险）。服务器基线不受影响。
+> 客户端侧自动化（`runClient`/IDE 开发实例）启动前，先按上一节「客户端 run 目录预置」写入 `run/options.txt`；桥接 Mod 0.2.1+ 启动时还会再强制关一次失焦暂停（双保险）。服务器基线不受影响。
 
 ```bash
 cd server-dir && <上表对应启动命令>                            # 必须在 server 目录里跑

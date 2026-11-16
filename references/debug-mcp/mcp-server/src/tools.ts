@@ -284,7 +284,7 @@ export function registerTools(server: McpServer): void {
     "mc_pause_on_lost_focus",
     {
       title: "Get/set pause-on-lost-focus",
-      description: "Read or write the vanilla pauseOnLostFocus option. Omit enabled for a read-only probe. enabled=true restores vanilla behaviour (losing window focus pauses the game) and switches the bridge's auto-pause guard off; enabled=false (the bridge's startup default) keeps the game running while the window is unfocused. Returns {enabled, auto_pause_guard}; auto_pause_guard reports the bridge's Mixin guard, which can suppress the focus-loss pause even while enabled=true.",
+      description: "Read or write the vanilla pauseOnLostFocus option. Omit enabled for a read-only probe. enabled=true restores vanilla behaviour (losing window focus pauses the game) and switches the bridge's auto-pause guard off; enabled=false (the bridge's startup default) keeps the game running while the window is unfocused. Returns {enabled, auto_pause_guard}; auto_pause_guard reports the bridge-side guard (it re-asserts pauseOnLostFocus=false every rendered frame while armed), so the focus-loss pause can stay suppressed even if the option gets toggled back on.",
       inputSchema: {
         enabled: z.boolean().optional().describe("omit for read-only; true/false also persists to options.txt"),
       },

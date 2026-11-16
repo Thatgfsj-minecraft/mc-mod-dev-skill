@@ -414,8 +414,8 @@
 
 - 无 `enabled`：只返回当前状态，不修改任何东西。
 - 传 `enabled`：设置 `options.pauseOnLostFocus = enabled` 并 `options.save()` 持久化；同时联动桥接端守卫：`enabled=true` → `auto_pause_guard=false`（**恢复原版失焦自动暂停**，供兼容性测试）；`enabled=false` → `auto_pause_guard=true`。
-- `auto_pause_guard`：桥接端是否屏蔽"原版失焦自动暂停"（默认 `true`，桥接启动时强制关掉 `pauseOnLostFocus` 并置位，见 bridge-mod README "失焦保活"）。
-- ⚠️ 该守卫**只针对失焦自动暂停**，**不影响 ESC 手动暂停**：ESC 同样调用 `pauseGame(false)`，粗暴取消 `pauseGame(boolean)` 会把 ESC 暂停菜单一起干掉（详见 §6 第 6 条与 bridge-mod README 红线）。
+- `auto_pause_guard`：桥接端是否屏蔽"原版失焦自动暂停"（默认 `true`）。实现方式 = 启动时强制关掉 `pauseOnLostFocus`，并在`auto_pause_guard` 为真期间**每渲染帧校正一次该上游开关**（F3+P / 选项重载 / 其他 Mod 把它改回 `true` 时会被掰回 `false`）。守卫**不注入 `pauseGame` 调用点**——见 §6 第 6 条。
+- ⚠️ 该守卫**只针对失焦自动暂停**，**不影响 ESC 手动暂停**：ESC 走 `KeyboardHandler` → `Minecraft.pauseGame(boolean)`，不读这个开关（详见 §6 第 6 条与 bridge-mod README 红线）。
 - **永远成功**（除 `INTERNAL`）。
 
 ### 3.18 `client.reload_resources`（v0.5.1 新增，L2 闭环配套）
@@ -453,4 +453,4 @@
 3. 桥接端崩溃（`INTERNAL`）不得关闭 TCP 连接；只有游戏退出才断连。
 4. **截图**（§3.11 / §3.16）：帧缓冲 / GL 像素访问必须在**渲染线程的帧末**执行。§3.16 的 PNG 编码与写盘在 IO 线程（`Util.ioPool()`），**写盘完成后**才发响应；`hide_hud` 的临时值必须在**被捕获帧渲染前生效**、在**同一次像素读取回调内**恢复，否则会漏改全局状态或抓到 HUD 已恢复的帧。
 5. **屏幕 / 暂停 / 资源重载**（§3.15 / §3.17 / §3.18）：读 `Minecraft.screen` / 读写 `Options` 必须在**客户端主线程**；`reloadResourcePacks()` 也在客户端主线程发起，future 完成后可从任意线程发响应（响应唯一性仍按 §2.2）。
-6. **失焦暂停守卫只允许拦原版自动暂停的调用点**（渲染循环里的失焦分支），**不允许**拦 `pauseGame(boolean)` 全局入口——ESC 也走同一个入口（见 §3.17 与 bridge-mod README 红线）。
+6. **失焦暂停守卫优先维护上游开关**（`Options.pauseOnLostFocus`，启动关一次 + 运行期每帧校正），**不要拦 `pauseGame(boolean)` 全局入口**——ESC 也走同一个入口（见 §3.17 与 bridge-mod README 红线）。如果确实要拦渲染循环里的失焦调用点，**不要用 `@Redirect`**：`@Redirect.at()` 在 sponge-mixin 0.17.0（单值 `At`）与 0.17.4（`At[]`）之间注解编码不同，用新版编译、旧 Loader 运行的 jar 会在 Mixin 变换阶段抛 `ClassCastException: ArrayList cannot be cast to AnnotationNode` 直接崩启动（真实事故，详见 `pitfalls.md` E5）；`@Inject.at()` 在两个版本都是 `At[]`，是安全的注入方式。
