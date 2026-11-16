@@ -1,6 +1,7 @@
 package com.thatgfsjminecraft.mcb;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -48,7 +49,10 @@ final class McbServer {
         }
     }
 
-    private static final Gson GSON = new Gson();
+    // serializeNulls(): protocol fields declared as nullable must appear as an
+    // explicit JSON null (e.g. §8.1 time_locked when lock_time=null). Gson drops
+    // JsonNull members by default, which would silently change the response shape.
+    private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     /** §1: a request line above this cap is a protocol violation — hang up. */
     private static final int MAX_LINE_CHARS = 1 << 20;
     /** §3.4 volume limit, enforced on the TCP thread before any main-thread hop. */

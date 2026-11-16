@@ -3,6 +3,7 @@ package com.thatgfsjminecraft.mcb;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -404,6 +405,8 @@ final class McbWorldOps {
         volatile String applyError;
         boolean markerDispatched;
         volatile boolean markerDone;
+        /** True once this op actually left/created a world (guards failure cleanup). */
+        boolean worldTouched;
 
         // -- delete flow
         Future<?> deleteFuture;
@@ -470,6 +473,7 @@ final class McbWorldOps {
     private static void stepDisconnecting(Active a) {
         Minecraft mc = Minecraft.getInstance();
         try {
+            a.worldTouched = true;
             disconnectToTitleScreen(mc);
         } catch (Throwable t) {
             fail(a, "WORLD_IN_USE", "failed to leave the current world: " + t);
@@ -571,6 +575,7 @@ final class McbWorldOps {
         Minecraft mc = Minecraft.getInstance();
         try {
             CreateRequest req = a.create;
+            a.worldTouched = true;
             Screen parent = new TitleScreen();
             mc.createWorldOpenFlows().createFreshLevel(
                     req.name(),
@@ -803,7 +808,9 @@ final class McbWorldOps {
         data.add("spawn", spawnArr);
         data.addProperty("seed", req.seed());
         data.add("gamerules_applied", gamerules);
-        if (req.lockTime() == null) data.add("time_locked", null);
+        // Gson's JsonObject.add(key, null) REMOVES the key; the protocol requires an
+        // explicit null for "time not locked" (§8.1), so use JsonNull.INSTANCE.
+        if (req.lockTime() == null) data.add("time_locked", JsonNull.INSTANCE);
         else data.addProperty("time_locked", req.lockTime());
         return data;
     }
@@ -856,11 +863,11 @@ final class McbWorldOps {
         JsonObject data = a.applyData != null ? a.applyData : new JsonObject();
         data.addProperty("elapsed_ms", System.currentTimeMillis() - a.startedAt);
         a.done = true;
+        release(a); // single-flight release before performing any further work
         a.onOk.accept(data);
         progress(a, "done");
         McbMod.LOGGER.info("[MCB] world.create done: {} preset={} in {}ms",
                 a.name(), a.create.preset().protocolName, System.currentTimeMillis() - a.startedAt);
-        release(a);
     }
 
     private static void succeedDelete(Active a) {
@@ -870,10 +877,10 @@ final class McbWorldOps {
         data.addProperty("deleted", true);
         data.addProperty("elapsed_ms", elapsed);
         a.done = true;
+        release(a);
         a.onOk.accept(data);
         progress(a, "done");
         McbMod.LOGGER.info("[MCB] world.delete done: {} in {}ms", a.name(), elapsed);
-        release(a);
     }
 
     private static void fail(Active a, String code, String message) {
@@ -883,9 +890,15 @@ final class McbWorldOps {
         McbMod.LOGGER.warn("[MCB] world.{} failed ({}): {}",
                 a.create != null ? "create" : "delete", code, message);
         progress(a, "failed");
-        a.onError.accept(code, message);
+        // §8.7.4 single-flight: release BEFORE answering, otherwise an immediate
+        // follow-up request would race the still-registered Active and get a
+        // spurious WORLD_IN_USE. Cleanup (only if we actually touched a world)
+        // must happen before the lock is released so the next op sees a settled
+        // client state. Early validation failures never tear down the current
+        // world — cleanupAfterFailure() is a no-op when !worldTouched.
         cleanupAfterFailure(a);
         release(a);
+        a.onError.accept(code, message);
     }
 
     private static void abortTimedOut(Active a) {
@@ -901,6 +914,10 @@ final class McbWorldOps {
 
     /** §8.7.6: best-effort return to the title screen so the next create does not hit a save lock. */
     private static void cleanupAfterFailure(Active a) {
+        // Only a flow that already left/created a world may tear one down: an
+        // early failure (WORLD_ALREADY_EXISTS / PRESET_INVALID / FORBIDDEN) must
+        // not disconnect the player from the world they were already in.
+        if (!a.worldTouched) return;
         try {
             Minecraft mc = Minecraft.getInstance();
             if (isInWorld(mc)) {

@@ -2,7 +2,7 @@
 
 > 适用环境：MC 1.21.11 · Fabric · Mojmap · JDK 21 · Loom 1.17.21（组织已验证坐标，见 `../../../environments/versions/1.21.11/README.md`）
 > 协议：[MCB v1](../protocol.md)（v0.5.1 起含 `screen.current` / `client.screenshot` / `client.pause_on_lost_focus` / `client.reload_resources` 与 `command.run` 的 `side`；v0.5.2 起含 §7 `watch.start/await/snapshot/list/stop` 五 op + `watch.triggered/watch.stopped` 两事件；v0.5.3 起默认不启动调试端口，由开发者模式确认弹窗或 `-Dmcb.devMode=true` 决定；v0.5.4 起含 §8 `world.create` / `world.delete` 两 op + `world.progress` 事件，参考实现 0.5.0）
-> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 / v0.5.3 / v0.5.4 新增能力的运行时状态以版本卡为准；v0.5.4 的 `world.*` 目前是编译探针 + 反编译源码核实，**运行时待验证**）。
+> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 / v0.5.3 / v0.5.4 新增能力的运行时状态以版本卡为准；v0.5.4 的 `world.*` 已完成编译探针 + 反编译源码核实 + 2026-11-17 runClient 真机验收（四预设建图 / gamerule / 时间天气 / 世界内重建 / 删除与错误码全通过；未跑项以版本卡为准））。
 
 这是 MCB v1 协议的**首个参考实现**。它存在的意义不是"装上就能用"（当然也能用），而是**作为模板**：任何 AI 拿着协议规范 + [PORTING.md](PORTING.md)，就应该能为其他 Loader / 其他版本写出等价物。
 

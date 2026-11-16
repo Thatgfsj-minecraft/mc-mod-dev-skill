@@ -3,7 +3,7 @@
 > 适用环境：MC 1.21.11，Fabric，Mojmap，JDK 21，Loom 1.17.21，Gradle 9.5.1。
 > 验证方式：`[实测：编译探针]` = 组织工程 `debug-mcp/bridge-mod/` 全量编译 + remap 通过（Gradle 9.5.1 + loom 1.17.21 + loader 0.19.5，2026-11-15）；`[实测：javap]` = 用 loom 缓存的命名 jar（`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged/1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar`）直接核签名，比解包 sources 更快。`[实测：运行时]` = 装进真实实例（HMCL 实例 `thatgfsj`，MC 1.21.11 + Loader 0.18.4 + JDK 21）后对活游戏的端到端调用，2026-11-15。`[实测：反编译源码]` = 直接阅读 1.21.11 Mojmap 反编译源码（`/tmp/mc1211all/net/minecraft/...`）并核对行号，2026-11-17。
 
-> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。v0.5.3 的开发者模式弹窗（0.4.0）已完成编译探针 + javap + runClient 双场景实测（部分人工交互项保持 `[ ]`，见"开发者模式弹窗运行时验证记录"）。v0.5.4 的 §8 `world.create`/`world.delete`（0.5.0）本轮只做**编译探针 + 反编译源码核实**，**运行时待验证**（未启动游戏；见文末"v0.5.4 世界创建器 API 核实 + 运行时状态"）。
+> **运行时状态**：v0.5.1 之前的既有 op 已全部实测通过（见文末"运行时验证记录"）；v0.5.1 新增的 4 个 op、`command.run` 的 `side` 扩展与失焦保活守卫目前是**编译探针 / 源码核实，运行时待验证**（见"v0.5.1 增量 op 实现状态"与文末待补记录）。v0.5.2 的 §7 watch 五 op + 两事件（0.3.0）已完成编译探针 + javap 核实，并在 2026-11-17 单世界活游戏上**部分运行时通过**（`watch.await` 逐份游标等；未跑项保持 `[ ]`，见下方"watch 运行时验证记录"）。v0.5.3 的开发者模式弹窗（0.4.0）已完成编译探针 + javap + runClient 双场景实测（部分人工交互项保持 `[ ]`，见"开发者模式弹窗运行时验证记录"）。v0.5.4 的 §8 `world.create`/`world.delete`（0.5.0）已完成编译探针 + 反编译源码核实，并在 2026-11-17 runClient 真机上**四预设建图 / gamerule / 时间天气 / 世界内重建 / 删除与错误码全部通过**（看门狗 TIMEOUT、survival+虚空坠落窗口等未跑项保持 `[ ]`，见文末"v0.5.4 世界创建器 API 核实 + 运行时状态"）。
 
 ## 协议实现（参考实现位置）
 
@@ -266,7 +266,7 @@
 
 ## v0.5.4 世界创建器 API 核实 + 运行时状态（0.5.0，§8）
 
-> 参考实现：`references/debug-mcp/bridge-mod` 的 0.5.0（新增 `McbWorldOps.java`，`McbServer`/`McbClientOps` 各加少量派发与 tick 泵）。本轮只做 **`gradle build` 编译探针 + 1.21.11 Mojmap 反编译源码核实**，**未启动 runClient / 未进真实游戏**：下表运行时状态一律 `[ ]`，不得当成"已实测"。
+> 参考实现：`references/debug-mcp/bridge-mod` 的 0.5.0（新增 `McbWorldOps.java`，`McbServer`/`McbClientOps` 各加少量派发与 tick 泵）。验证分两轮：① `gradle build` 编译探针 + 1.21.11 Mojmap 反编译源码核实；② **2026-11-17 runClient 真机验收**（`-Dmcb.devMode=true`，Gradle 9.5.1 / JDK 21.0.13，窗口 :0）：4 预设建图、gamerule/时间/天气、世界内重建（clean_if_exists）、删除与错误码、`world.progress` 均实测通过，MCP 侧 `MCB_LIVE=1 node smoke.mjs` 与 `node integration.mjs` 也全绿。未跑项保持 `[ ]`，不得当成"已实测"。
 > 源码位置：`/tmp/mc-src`（1.21.11 Mojmap 反编译；如被清理可从 loom 缓存的 `-sources.jar` 重新解压）。
 
 ### 已核实的 1.21.11 API（编译探针 + 反编译源码）
@@ -298,21 +298,30 @@
 - **`fire_tick=false` → gamerule `fire_spread_radius_around_player=0`**：1.21.11 已删除 `doFireTick`。该整数规则语义为 `-1` = 不限制蔓延范围、`0` = 只有玩家贴身时才会蔓延（等价"基本关闭"）、正数 = 限制在该半径内；参考实现取 `0`，`fire_tick=true` 时取 `-1`。
 - **`do_mob_spawning=false` → gamerule `spawn_mobs=false`**，难度保持 `normal`（和平难度下 `/summon` 的敌对测试怪会立即消失，不能作为"安全"默认）。
 
-### 运行时状态（0.5.0，全部待验证 —— 本任务未启动游戏）
+### 运行时状态（0.5.0，2026-11-17 runClient 真机验收）
 
-- [ ] 4 预设各建图成功：`bedrock_lab` / `flat_clean` / `vanilla_quiet` / `void_platform`；响应 `spawn` 与平台表面/超平坦表面一致（`bedrock_lab` 约 y=-61）。
-- [ ] `vanilla_quiet` 固定 seed 12345 可复现；世界确实无村庄/要塞（`generate_structures=false`）。
-- [ ] `world.create` 成功后 `level.dat` 的 gamerule 落盘为 `spawn_mobs=false / advance_time=false / advance_weather=false / fire_spread_radius_around_player=0 / keep_inventory=true`，且时间锁定 6000、晴天。
-- [ ] 创造模式进入（默认）、`allow_commands` 生效（`command.run` 可用）；`difficulty=normal` 时 `/summon zombie` 不消失。
-- [ ] `void_platform`：平台 9×9 基岩在 Y=64、世界出生点 (0,65,0)；玩家未坠落死亡；survival + 已坠落场景被传送回 (0.5,65,0.5) 且坠落距离清零。
-- [ ] 在世界内调用 `world.create`：先 save-and-quit 到标题屏再建图；`clean_if_exists=true` 时旧存档被删后重建（fast-iteration：同名连续两轮）。
-- [ ] `world.delete`：`mcb_` 前缀存档删除成功、`deleted:true`、目录消失；运行中未 `force` → `WORLD_IN_USE`；`force=true` 先退出再删。
-- [ ] 安全红线：玩家手工存档（非 `mcb_` 且无 marker）→ `WORLD_DELETE_FORBIDDEN`；`world.create` 写入的 `.mcb-world.json` 能让非 `mcb_` 名字可删。
-- [ ] 错误码：`WORLD_NOT_FOUND` / `WORLD_ALREADY_EXISTS`（`clean_if_exists=false`）/ `PRESET_INVALID` / `BAD_PARAMS`（名字非法、`lock_time` 越界、`timeoutMs` 越界）。
-- [ ] 单飞：两个并发 `world.create` → 第二个 `WORLD_IN_USE`。
+> 验收方式：Gradle 9.5.1 / JDK 21.0.13 起 `runClient`（`JAVA_TOOL_OPTIONS="-Dmcb.devMode=true -Dmcb.port=25585"`），用裸 TCP NDJSON 客户端逐条断言，MCP 侧再跑 `MCB_LIVE=1 node smoke.mjs` / `node integration.mjs`。下列 `[实测]` 均为本轮通过；未跑项保持 `[ ]`。
+
+- [实测] 4 预设各建图成功，`spawn` 为实际出生点：`bedrock_lab` = `(0,-61,0)`、`flat_clean` = `(0,-60,0)`、`void_platform` = `(0,65,0)`、`vanilla_quiet` = 原版随机地表（本轮 `(96,136,-32)`）。超平坦原地形：`bedrock_lab` Y=-64/-63/-62 均为基岩；`flat_clean` 玩家落在 y=-60。
+- [实测] `vanilla_quiet` 固定 seed 12345 生效（响应 `seed=12345`，主世界维度 `minecraft:overworld`）。**未直接扫描村庄/矿脉以证明结构确实关闭**（`generate_structures=false` 走 `WorldOptions`，结构关闭的逐项扫描保留 `[ ]`）。
+- [实测] 进世界后用 `command.run` 查询：`spawn_mobs=0` / `advance_time=0` / `advance_weather=0` / `keep_inventory=1` / `fire_spread_radius_around_player=0`，`timeOfDay=6000`、不雨不雷。**未重启回读 `level.dat` 验证落盘**（世界内读到的即已加载的 level data，落盘回读保留 `[ ]`）。
+- [实测] 默认创造模式进入（`player.gamemode=creative`）；`allow_commands=true` 生效（`command.run` 成功并拿到 `returnValue`）。`difficulty=normal` 时 `/summon zombie` 不消失未单独跑（保留 `[ ]`）。
+- [实测] `void_platform`：`(0,64,0)` 与四角 `(±4,64,±4)` 等 9×9 为基岩、`(5,64,0)` 为空气；世界出生点 `(0,65,0)`；玩家被正确放到平台上（y≈65，未坠虚空）。**survival + 已坠落玩家的传送救援路径未跑**（默认创造无此窗口，保留 `[ ]`）。
+- [实测] 在世界内调用 `world.create`：先 save-and-quit 回标题屏再建图成功；`clean_if_exists=true` 同名连续两部分两轮（旧存档删除后重建）成功；`clean_if_exists=false` + 已存在 → `WORLD_ALREADY_EXISTS`，且**不会把玩家踢出当前世界**。
+- [实测] `world.delete`：运行中未 `force` → `WORLD_IN_USE`；`force=true` 先退出再删；非运行存档直接删除；三种路径都返回 `deleted:true`，目录消失。
+- [实测] 安全红线：手工目录（非 `mcb_` 且无 marker）→ `WORLD_DELETE_FORBIDDEN`。**`.mcb-world.json` 让非 `mcb_` 名字可删的正向路径未单独跑**（保留 `[ ]`）。
+- [实测] 错误码：`WORLD_NOT_FOUND` / `WORLD_ALREADY_EXISTS` / `PRESET_INVALID` / `BAD_PARAMS`（名字含 `../`）均按契约返回。`lock_time` / `timeoutMs` 越界的 `BAD_PARAMS` 未单独跑（保留 `[ ]`）。
+- [实测] 单飞与响应顺序：`WORLD_ALREADY_EXISTS` 失败响应后紧接的 `world.create` 不再被误判 `WORLD_IN_USE`（修复前会撞车，见"实测中发现并修复"）。真正两个并发请求的竞态未单独构造（保留 `[ ]`）。
 - [ ] 看门狗：人为把 `timeoutMs` 压到 30000 并拖慢加载 → 只回一个 `TIMEOUT`（`responded` 生效），之后无第二个响应。
-- [ ] 失败清理：建图失败/超时后回主菜单；紧接着再次 `world.create` 不撞存档锁（`LevelStorageAccess` 已释放）。
-- [ ] `world.progress` 事件顺序（preparing→disconnecting?→deleting?→creating→awaiting_join→applying→done）与 `failed` 后必有错误响应。
+- [实测] 失败清理：早期失败（`WORLD_ALREADY_EXISTS`）不再断开玩家当前世界；后续 `world.create` 正常执行，未撞存档锁。
+- [实测] `world.progress` 事件：`preparing → deleting → creating → awaiting_join → applying → (done)` 顺序符合预期（`done` 可能晚于响应到达，符合协议 §2.3 事件时序）；失败路径会推 `failed` 并伴随一个错误响应。
+- [实测] MCP 侧：`MCB_LIVE=1 node smoke.mjs` 与 `MCB_LIVE=1 node integration.mjs` 全绿（含 `mc_world_create → mc_status → mc_world_delete` 真机链路）。
+
+### 实测中发现并修复的实现缺陷（2026-11-17）
+
+1. **`time_locked: null` 被 Gson 吃掉**：`new Gson()` 默认丢弃 `JsonNull` 成员（`JsonObject.add(key, null)` 直接删键），导致 `lock_time=null` 时响应缺字段。修复：`McbServer` 的 `GSON` 改为 `new GsonBuilder().serializeNulls().create()`，`McbWorldOps.finalApply` 显式 `JsonNull.INSTANCE`。
+2. **失败响应先于单飞释放**：`fail()` 原来先 `onError.accept` 再清理/释放，导致紧随其后的请求在清理窗口内被误判 `WORLD_IN_USE`。修复：清理 → 释放 → 再响应（成功路径同样先释放再响应）。
+3. **早期失败误退当前世界**：`cleanupAfterFailure` 原来无条件"回主菜单"，`WORLD_ALREADY_EXISTS` 这类未触碰世界的失败会把玩家从正在玩的世界踢出去。修复：新增 `worldTouched` 标记，只有真正 disconnect/建图过才清理。
 
 ### 已知风险 / 与协议的偏差（显式记录）
 
