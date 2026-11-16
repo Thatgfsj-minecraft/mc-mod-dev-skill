@@ -46,12 +46,14 @@
 
 1. **`@Inject` 改返回值必须写 `cancellable = true`**：TAIL 注入里调 `cir.setReturnValue(...)` 而没写这个标志，Mixin 会抛 `CancellationException` **炸掉渲染线程**（报 "The call method_3196 is not cancellable"）。`camera.eye` 一次性模式能侥幸躲过（时序问题），但 `camera.set` 持久模式每帧都过 `getFov`，第一次覆盖必崩。`[实测：crash-2026-11-15_16.35.20-client.txt]`
 2. **抓帧的相机覆盖必须在像素读取完成之后才撤销**：提前撤销会抓到"HUD 已恢复"的帧（物品栏/血条又出现了）。正确做法是把 UI 抑制标志**派生自**相机覆盖状态（`uiSuppressed() => active`），覆盖只在读取回调里撤销——单一真相源，不会漂移。`[实测：运行时对比]`
-3. **mod 信息栏（Jade/WTHIT）原理上不会跟随虚拟相机**：Jade 21.1.1 的 `RayTracing` 射线起点固定是 `player.getEyePosition()`，`perspectiveMode: CAMERA` 只把**距离基准**换成相机、不改起点。想让 AI 知道"镜头在看哪个方块"，得自己在**虚拟相机位置**上做射线（协议 §3.14 `camera.look`），别指望 mod 面板。`[实测：Jade 21.1.1 字节码反汇编 + 运行时验证]`
+3. **mod 信息栏（Jade/WTHIT）会跟随虚拟相机，但有前提**：Jade 21.1.1 的 `RayTracing.rayTrace` 在 `perspectiveMode: CAMERA` 下用 `camera.position()`（`method_71156`）当射线起点、`camera.forwardVector()`（`method_19335`）当方向——**都是虚拟相机的值**，所以方块高亮框会精确套在虚拟相机准星指着的方块上。**前提是 `displayMode: LITE`**（见下条）。`[实测：Jade 21.1.1 字节码反汇编 + 运行时验证：金块 (20,70,20) 高亮框与 camera.look 返回值完全一致]`
+   - ⚠️ 曾经的错误结论：早期文档写"Jade 原理上不跟随虚拟相机"，那是**只反编译到 `player.getEyePosition()` 那条分支**（`perspectiveMode: EYE` 时才走的路径）就下了结论。**读反编译产物要读全分支**，否则容易得出相反的结论。
+   - Jade 的射线在 **tick 阶段**（`WailaTickHandler.tickClient`）计算，不是渲染阶段 → 比渲染**滞后一帧**，但持续模式下无感知。
 
 ### 补充环境事实
 
 - **Loom 1.17.21 需要 Gradle 9.x 的插件 API**：Gradle 8.14 会构建失败（loom 用了 9.x 才有的 API）。`[实测：构建踩坑]`
-- **Jade 的 `displayMode`**：`TOGGLE` / `HOLD_KEY` 需要**按住** HUD 键才显示面板——AI 按不了键，所以自动化调试场景必须改成 `LITE`（配置文件 `config/jade/jade.json`）。`[实测：运行时]`
+- **Jade 的 `displayMode`**：`TOGGLE` / `HOLD_KEY` 需要**按住** HUD 键才显示面板——AI 按不了键，所以自动化调试场景必须改成 `LITE`（配置文件 `config/jade/jade.json`）。⚠️ **游戏会把配置写回原值**（每次退出会覆盖 `jade.json`），改完必须重启游戏才生效，且重启后要再确认一次。`[实测：运行时]`
 
 
 ## 实现侧要点（协议之外的环境事实）
@@ -76,5 +78,15 @@
   - `status.cameraMode` 三态切换正确（none / one-shot / persistent）
   - 坩埚渲染规则验证：满桶熔岩只显示液面（熔岩>固体规则生效）
   - ⚠️ 一次性 `camera.eye` 仍带 HUD → 已定位为时序 bug（见"天眼三大坑"第 2 条），修复后需重启复验
-  - ❌ Jade 信息栏不跟随虚拟相机 → 已定位为 mod 设计限制（见"天眼三大坑"第 3 条），改用 `camera.look`（协议 §3.14）
+
+- **运行时验证记录（2026-11-16，天眼第二轮，全部通过）**：新 jar（`a643694`）部署 + 重启后实测：
+  - 一次性 `camera.eye` → **完全无 HUD**：物品栏/血条/小地图/F3 调试文字/第一人称手臂/物品名弹窗全部消失，**Jade 方块框保留**
+  - `camera.look` 两种参数形式都命中 → `minecraft:grass_block` @ (8,63,8)；`lookAt` 形式 yaw=135/pitch=85.5 与手算一致
+  - `camera.set` + `fov:55` 持久模式 → **不崩**，FOV 生效，`status.cameraMode=persistent`，截图正常
+  - `camera.clear` → `mode=none`，HUD 与视角完全恢复
+  - ✅ **Jade 方块框跟随虚拟相机**：金块 @ (20,70,20) 被精确套框，Jade 高亮方块与 `camera.look` 返回值**完全一致**
+  - 补齐的屏蔽项：`Gui.renderDebugOverlay`（F3 文字）、`GameRenderer.renderItemInHand`（手臂，**不在 Gui 里**）、`Gui.renderSelectedItemName`（物品名弹窗）、`Gui.renderSavingIndicator`
+
+- **环境事实：X11 输入注入找游戏窗口**：`xprop -id <id> WM_CLASS` 才能认准游戏窗口——**顶层标题 "THATGFSJ" 其实是 GameViewer（远程串流客户端），不是 Minecraft**。真游戏窗口的 `WM_CLASS` 是 `Minecraft* 1.21.11`（1280x720 的 GLFW 子窗口）。按键必须用 **XTEST**（`libXtst.so.6` 的 `XTestFakeKeyEvent`）注入，LWJGL 忽略 `XSendEvent` 的合成事件。`[实测：X11 注入链路排障]`
+- **环境事实：直启游戏要自己拼 classpath**：从 `thatgfsj.json` 的 `libraries` 推导——**部分库（fabric-loader 等）没有 `downloads.artifact` 字段**，只有 Maven 坐标，得按 `group/artifact/version/artifact-version.jar` 拼路径；入口类是 `net.fabricmc.loader.impl.launch.knot.KnotClient`（不是 `Knot`，后者没有 main）。`[实测：直启脚本排障]`
 

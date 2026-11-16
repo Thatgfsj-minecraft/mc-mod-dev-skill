@@ -53,7 +53,7 @@ AI agent（你）
    - `mc_camera_look`（"镜头在看哪个方块"）→ 比截图便宜得多，返回命中方块的 id/属性/方块实体 NBT，**优先用它**；
    - `mc_camera_eye`（一次性出图）→ 需要看**外观/渲染效果**时才用；
    - `mc_camera_set` + `mc_screenshot`（持久模式多次取景）→ 需要从多个角度反复观察同一目标时用。
-   - ⚠️ mod 信息栏（Jade/WTHIT）**不会跟随虚拟相机**（射线起点固定为玩家眼位），别指望截图里的面板告诉你镜头在看哪。
+   - ✅ mod 信息栏（Jade）在 `displayMode: LITE` + `perspectiveMode: CAMERA` 下**会跟随虚拟相机**，高亮框套在准星指的方块上——但要结构化数据（id/属性/NBT）还是用 `mc_camera_look` 更省事。
 9. **天眼拍到虚空就是区块没加载**——响应里的 `chunks.centerLoaded` / `loadedNearby` 会如实报；`centerLoaded=false` 时先 `mc_command` 跑 `forceload add <cx> <cz>` 再拍。
 
 ## 5. 为新环境写桥接（扩展流程）
