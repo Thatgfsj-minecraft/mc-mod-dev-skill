@@ -66,6 +66,8 @@ AI agent（你）
 13. **`command.run` 的 `side` 要显式**——集成服断言用 `side:"server"`（可拿 `returnValue`/反馈）；多人世界客户端命令用 `side:"client"`（无回显，`resultText:""`、`returnValue:null`）；不要假设 `auto` 一定走服务端。
 14. **有观察窗口的实验用 watch 会话，不要手动 sleep 轮询**——`mc_watch_start` 先拍 t0 基准并声明 `upload_rule`，命中后一次 `mc_watch_await` 拿回结论；`next_seq` **逐份前进**（interval/repeat 的多份报告不会漏），`matched:false` 是正常超时；`auto_stop` 后报告保留 60s，过期才 `WATCH_NOT_FOUND`。`mc_watch_stop` 只有创建会话的连接能调；参考 Fabric 客户端桥接仅集成服可用（多人世界回 `WORLD_NOT_LOADED`）。规则/报告模式/字段见协议 §7。
 15. **开发者模式是启动开关**——0.4.0+ 默认不占端口、不改失焦暂停，必须先点确认屏【是】或带 `-Dmcb.devMode=true`；自动化漏传该参数的表现是“游戏正常但 MCP 一直 BRIDGE_UNREACHABLE”，不是桥接坏了。配置/优先级见 bridge-mod README 与 `e2e-testing.md`。
+16. **搭场景前先建测试世界（v0.5.4）**——`mc_world_create` 一次拉起干净世界（默认创造 / 关结构 / 关自然刷怪 / normal 难度 / 锁正午晴天），之后再用 `mc_command` 改世界；**不要默认进玩家的生存存档**，也不要在一轮实验的残留世界里接着做。固定存档名 + `clean_if_exists:true` 是 fast-iteration 纪律，测试结束 `mc_world_delete`（完整闭环见 §6.9、契约见协议 §8）。
+17. **建图是异步的，响应回来才算数**——`world.create` 在"进世界 + 应用 gamerule"完成后才回响应（可能 10s 级，期间只有 `world.progress` 事件）；不要在响应返回前发后续命令。`BAD_OP` = 桥接 Mod < 0.5.0（协议 v0.5.4 才新增 `world.*` op，回退手工进世界）；`CLIENT_ONLY` = 专用服桥接不支持建图/删图；`WORLD_IN_USE` = 另一个建/删正在飞，不要并发。
 
 ## 5. 为新环境写桥接（扩展流程）
 
@@ -223,3 +225,28 @@ mc_watch_stop({ watch_id: "explosion_test_01" })        # 只有 owner 能停；
 | `[MCB RULE_INVALID]` | 规则树深度 >4 / 节点 >16 / 未知 type / 缺必填 / 正则非法 / 非 log.line 事件源 | 按协议 §7.2 修 `upload_rule`；先用最小规则验证 |
 | `[MCB TOO_LARGE] ... watch session limit reached` | 活跃 watch 会话已达 8 个 | `mc_watch_list` 挑无用会话 `mc_watch_stop`（owner）后再建 |
 | watch 工具回 `[MCB WORLD_NOT_LOADED]` | 多人世界 / 主菜单：参考客户端桥接只在集成服采样 | 单人存档测试，或按协议 §7 为专用服务端实现 watch |
+
+### 6.9 测试世界创建闭环（v0.5.4）
+
+搭场景前先把"世界"这个前提拉干净，再动命令。技能包 v0.5.4 起共 **26 个 `mc_*` 工具**（原 24 个 + `mc_world_create` / `mc_world_delete`，与协议 op 一一对应），闭环：
+
+```text
+mc_status()                                            # 1. 基线：worldLoaded=false（停在主菜单）或旧的测试世界
+mc_world_create({ name: "mcb_e2e", preset: "flat_clean" })   # 2. 只传 name + preset，其余默认
+                                                       #    → world_name / preset / game_mode / difficulty / spawn / seed / gamerules_applied / time_locked
+mc_status()                                            # 3. 复查：worldLoaded=true、player.gamemode=creative、timeOfDay=6000、raining=false
+mc_command({ command: "gamerule spawn_mobs", side: "server" })   # 4. 需要时核对规则真的落地（回执里读值）
+...                                                    # 5. 测试：§6.1–§6.7（命令搭场景 / watch 观察 / 截图验收）
+mc_world_delete({ name: "mcb_e2e", force: true })      # 6. 收尾：删存档
+```
+
+**要点（v0.5.4）**：
+
+- **参数契约：平时只传 `name` + `preset`**。默认就是创造 + 关结构 + 关自然刷怪 + normal 难度 + 锁正午晴天 + `keep_inventory` + seed 12345（协议 §8.0）；4 套预设 `bedrock_lab` / `flat_clean` / `vanilla_quiet` / `void_platform` 的选择见协议 §8.2 与 `e2e-testing.md`「测试世界基线」。
+- **`spawn` 是实际出生点，不是参数复读**：`bedrock_lab` 约 `[0,-61,0]`、`void_platform` 为 `[0,65,0]`。第 3 步确认 `player` 坐标落在附近（没掉虚空）再发后续命令。
+- **覆盖默认值只有两个正当理由**：测生存机制 → `game_mode:"survival"`；测结构生成 → `generate_structures:true`。为了"图省事"改成 survival / 开结构，会让观察结果被野怪、村庄、天气污染。
+- **fast-iteration**：`clean_if_exists` 默认 true，固定存档名即可每轮秒重建；显式传 `false` 时重复建会得到 `WORLD_ALREADY_EXISTS`。
+- **清理纪律**：存档名用 `mcb_` 前缀，测试结束 `mc_world_delete`。安全红线（协议 §8.4）：非 `mcb_` 前缀且无 `.mcb-world.json` 标记的存档 → `WORLD_DELETE_FORBIDDEN`，不要试图绕过。
+- **建图 / 删图是单飞的**（协议 §8.7）：并发请求会 `WORLD_IN_USE`，不要并行发两个；`world.create` 默认看门狗 120s、`world.delete` 60s，慢机器显式调 `timeout_ms`（协议 op 字段名 `timeoutMs`，MCP 工具层 `timeout_ms`）。
+- **错误码速查**：`BAD_OP`（桥接 Mod < 0.5.0 / 协议 v0.5.4 之前的桥，回退手工进世界）、`PRESET_INVALID`（预设名拼错，见 §8.2 四值）、`CLIENT_ONLY`（专用服桥接无此能力）、`WORLD_NOT_FOUND`（删不存在的存档）、`TIMEOUT`（建图超时）。
+- **纪律与 fast-iteration 一致**：建图成功后仍然按 §4 用一次性世界 / 定格截图 / watch 会话观察；`mc_world_delete` 只是把"手动删存档"变成工具调用，不改变"测试状态不留在主世界"的原则（`fast-iteration.md` §7）。
