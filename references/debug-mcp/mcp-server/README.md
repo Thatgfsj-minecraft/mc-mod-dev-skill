@@ -17,7 +17,7 @@ npm install && npm run build
 
 ## 工具 ↔ op 映射
 
-工具与 op 一一对应（协议 §3），工具不额外发明抽象；标 **0.2.0+** 的工具需要 bridge-mod 0.2.0 及以上，旧桥会对未知 op 回 `BAD_OP`。
+工具与 op 一一对应（协议 §3），工具不额外发明抽象；标 **0.2.1+** 的工具需要 bridge-mod 0.2.1 及以上，旧桥会对未知 op 回 `BAD_OP`。
 
 | MCP 工具 | op | 说明 |
 |---|---|---|
@@ -31,10 +31,10 @@ npm install && npm run build
 | `mc_wait_log` | `log.wait` | 长轮询等一条日志 |
 | `mc_command` | `command.run` | 执行命令；`side` 选 server/client（见下） |
 | `mc_screenshot` | `screenshot.take` | 截图（base64 image content，多模态可看） |
-| `mc_screen_current` | `screen.current` | 当前 Screen / 窗口焦点 / 失焦暂停开关 **0.2.0+** |
-| `mc_client_screenshot` | `client.screenshot` | 截图落盘到 `<gameDir>/screenshots/` 并回读为 image content **0.2.0+** |
-| `mc_pause_on_lost_focus` | `client.pause_on_lost_focus` | 读写原版 `pauseOnLostFocus`（缺省只读）**0.2.0+** |
-| `mc_reload_resources` | `client.reload_resources` | 客户端资源包重载（F3+T 等价）**0.2.0+** |
+| `mc_screen_current` | `screen.current` | 当前 Screen / 窗口焦点 / 失焦暂停开关 **0.2.1+** |
+| `mc_client_screenshot` | `client.screenshot` | 截图落盘到 `<gameDir>/screenshots/` 并回读为 image content **0.2.1+** |
+| `mc_pause_on_lost_focus` | `client.pause_on_lost_focus` | 读写原版 `pauseOnLostFocus`（缺省只读）**0.2.1+** |
+| `mc_reload_resources` | `client.reload_resources` | 客户端资源包重载（F3+T 等价）**0.2.1+** |
 | `mc_move_player` | `player.move` | 带地面安全的传送（虚空自动垫玻璃） |
 | `mc_camera_eye` | `camera.eye` | 天眼一次性取景截图（不移动玩家） |
 | `mc_camera_set` | `camera.set` | 进入持久自由相机 |
@@ -58,7 +58,7 @@ npm run build && node smoke.mjs && node integration.mjs
 
 - `smoke.mjs`（默认离线）：不需要游戏。它给 MCP 进程指定一个**刚被释放的空闲端口**（不会去碰默认 25585 上可能正在跑的游戏），断言 initialize、19 个工具、死桥 `BRIDGE_UNREACHABLE` 契约与 zod 参数校验。
 - `integration.mjs`：自己起一个**假桥**（随机端口 25586+），逐 op 严格校验线上参数形状（扁平 x/y/z、截图文件名只能是 basename、`hide_hud` 布尔、`side` 枚举……）并断言 4 个新工具与 `mc_command` 的透传。不需要游戏。
-- `smoke.mjs` 的**活桥模式**（运行时验收，需要游戏 + bridge-mod 0.2.0+）：
+- `smoke.mjs` 的**活桥模式**（运行时验收，需要游戏 + bridge-mod 0.2.1+）：
 
   ```bash
   MCB_LIVE=1 node smoke.mjs            # 默认连 127.0.0.1:25585

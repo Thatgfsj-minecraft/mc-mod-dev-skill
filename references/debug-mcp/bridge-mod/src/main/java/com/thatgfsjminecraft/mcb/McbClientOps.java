@@ -21,7 +21,7 @@ import java.util.function.Consumer;
  *   client.reload_resources      — L2 hot-reload loop (F3+T equivalent)
  *
  * It also owns the two focus-keep-alive pieces the mixins read: the
- * {@code autoPauseGuard} flag (§1.2 @Redirect guard) and the one-time
+ * {@code autoPauseGuard} flag (§1.2 per-frame re-assert) and the one-time
  * {@code options.pauseOnLostFocus = false} init (§1.1).
  *
  * WHY A SEPARATE CLASS: McbHandlers is already ~730 lines and is about
@@ -47,7 +47,7 @@ public final class McbClientOps {
     private static final int FOCUS_RETRY_LIMIT = 20;
 
     // =====================================================================
-    // §1.2 focus-pause guard (read by GameRendererMixin's @Redirect)
+    // §1.2 focus-pause guard (re-asserted by GameRendererMixin's frame-end @Inject)
     // =====================================================================
     /**
      * true  = the GameRenderer focus-loss {@code Minecraft.pauseGame(false)} call
@@ -66,6 +66,32 @@ public final class McbClientOps {
 
     private static void setAutoPauseGuard(boolean enabled) {
         autoPauseGuard = enabled;
+    }
+
+    /**
+     * §1.2 runtime guard: while autoPauseGuard is on, a pauseOnLostFocus that got
+     * re-enabled behind our back (F3+P, an options reload, another mod) is put
+     * back to false once per rendered frame.
+     *
+     * Called from GameRendererMixin's RETURN `@Inject` — NOT an @Redirect: the
+     * @Redirect annotation's `at` wire format differs between sponge-mixin
+     * 0.17.0 (single At) and 0.17.4 (At[]), which crashed the client at startup
+     * when the dev build (0.17.4) ran on the 0.17.0 runtime. `@Inject.at` is
+     * At[] on both, so this path is version-stable.
+     *
+     * No options.save() here: persisting happens once at startup / via
+     * client.pause_on_lost_focus, and we must not write options.txt every frame.
+     */
+    static void enforceFocusKeepAlive() {
+        if (!autoPauseGuard) return;
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc != null && mc.options != null && mc.options.pauseOnLostFocus) {
+                mc.options.pauseOnLostFocus = false;
+            }
+        } catch (Throwable ignored) {
+            // the guard must never take the render thread down
+        }
     }
 
     // =====================================================================
@@ -196,7 +222,7 @@ public final class McbClientOps {
      *
      * The guard is coupled to the option on purpose: {@code enabled=true} is the
      * "temporarily restore vanilla behaviour for a compatibility test" path, and
-     * it would be defeated by our own @Redirect guard still swallowing the call,
+     * it would be undone by our own per-frame guard re-asserting the option,
      * so the guard is turned off together with re-enabling the option.
      */
     static JsonObject pauseToggle(Boolean enabled) {
@@ -289,6 +315,10 @@ public final class McbClientOps {
      * including the vanilla HUD and any open Screen.
      */
     public static void onFrameEnd() {
+        // §1.2 focus-pause guard: re-assert the upstream switch once per frame.
+        // Cheap (two volatile/field reads) and annotation-version-stable; see
+        // GameRendererMixin for why this is not an @Redirect anymore.
+        enforceFocusKeepAlive();
         if (SHOT_QUEUE.isEmpty()) {
             // Self-healing: if a capture failed after hideGui was taken over, the
             // HUD must not stay hidden forever.

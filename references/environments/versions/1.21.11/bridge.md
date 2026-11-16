@@ -8,7 +8,8 @@
 ## 协议实现（参考实现位置）
 
 - 参考实现：`references/debug-mcp/bridge-mod/`（协议规范：`references/debug-mcp/protocol.md`）
-- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.2.0.jar`（remapJar 正常，2026-11-17 00:54；jar 内含 `McbClientOps.class` 与新 `McbScreenshot`/`GameRendererMixin`）。`[实测：编译探针]`；本节 API 结论以编译探针 + 反编译源码为准。
+- 构建验证：`gradle build` 全绿，产物 `mc-debug-bridge-0.2.1.jar`（remapJar 正常，2026-11-17 01:58；jar 内含 `McbClientOps.class` 与新 `McbScreenshot`/`GameRendererMixin`）。`[实测：编译探针]`；本节 API 结论以编译探针 + 反编译源码为准。
+- **0.2.0 构建产物（00:54）存在致命缺陷、已废弃**：它的 `@Redirect` 注解在 0.18.4 运行时直接崩溃（见下方"0.2.0 启动崩溃与 0.2.1 修复"）。**不要把 0.2.0 当作可运行版本**。
 
 ## 已核实的 API（编译探针 / javap / 反编译源码，移植时直接对照）
 
@@ -46,16 +47,33 @@
 
 ## v0.5.1 增量 op 实现状态（编译探针 / 源码核实，运行时待验证）
 
-> 0.2.0（`mc-debug-bridge-0.2.0.jar`）于 2026-11-17 00:54 构建成功（remapJar 正常）；下表状态 = 编译探针 + 源码核实，**均未做真实游戏运行时验证**。
+> `0.2.1`（`mc-debug-bridge-0.2.1.jar`）于 2026-11-17 01:58 构建成功（remapJar 正常）；下表状态 = 编译探针 + 源码核实，**均未做真实游戏运行时验证**。
+> 0.2.0 在同一实例上启动崩溃（11:35:53，`@Redirect` 注解编码问题），已由 0.2.1 移除 `@Redirect` 修复；详见下一节。
 
 | 能力 / op | 实现点（参考实现） | 状态 |
 |---|---|---|
-| 失焦保活（启动关 `pauseOnLostFocus` + 渲染循环失焦守卫） | `McbMod.onInitializeClient()` + `mixin/GameRendererMixin`（`@Redirect` `Minecraft.pauseGame(Z)V`） | 编译探针 + 源码核实；**运行时待验证** |
+| 失焦保活（启动关 `pauseOnLostFocus` + 运行期每帧校正） | `McbMod.onInitializeClient()` + `McbClientOps.enforceFocusKeepAlive()`（帧末 `@Inject` 调用；**不用 `@Redirect`**，原因见下节） | 编译探针 + 源码核实；**运行时待验证** |
 | `command.run` 的 `side` 路由与 `returnValue`/`messages`/`side` 字段 | `McbServer` dispatch + `McbHandlers.commandRun`（server 路径）/ `ClientPacketListener.sendCommand`（client 路径） | 编译探针 + 源码核实；**运行时待验证** |
 | `screen.current` | `McbClientOps.screenJson()`（客户端主线程） | 编译探针 + 源码核实；**运行时待验证** |
 | `client.screenshot`（落盘版） | `McbClientOps.requestScreenshot(...)` + `GameRendererMixin` 帧末 `onFrameEnd()` + `McbScreenshot` | 编译探针 + 源码核实；**运行时待验证** |
 | `client.pause_on_lost_focus` | `McbClientOps.pauseToggle(Boolean)`（写 `options` + `save()`） | 编译探针 + 源码核实；**运行时待验证** |
 | `client.reload_resources` | `McbClientOps.reloadResources(callback)`（`reloadResourcePacks()` future + 30s 看门狗） | 编译探针 + 源码核实；**运行时待验证** |
+
+### Mixin 注解 API 的跨版本差异（实测，直接导致 0.2.0 崩溃）
+
+| 事实 | 结论 | 验证 |
+|---|---|---|
+| `@Redirect.at()` 返回类型 | `sponge-mixin 0.17.4+mixin.0.8.7`（fabric-loader **0.19.5**，本项目编译 classpath）= `At[]`；`sponge-mixin 0.17.0+mixin.0.8.7`（fabric-loader **0.18.4**，本机运行实例）= 单值 `At` | `[实测：javap 两个 jar 对比]` |
+| `@Inject.at()` 返回类型 | 两个版本都是 `At[]` → 跨版本安全 | `[实测：javap]` |
+| 后果 | 源码 `at = @At(...)` 编译到 0.19.5 classpath 会编码成 **数组**；拿到 0.17.0 运行时后 MixinExtras `preApply` 把数组当单个 `AnnotationNode` 读 → `ClassCastException: java.util.ArrayList cannot be cast to org.objectweb.asm.tree.AnnotationNode` → `Mixin transformation of net.minecraft.class_757 failed` → 启动崩溃 | `[实测：crash-2026-11-17_01.35.53-client.txt + javap jar 内 GameRendererMixin.class]` |
+| 规则 | 跨 Loader 版本分发的模板**不要用 `@Redirect`**；需要拦调用点用 `@Inject(at=@At("INVOKE" ...))`（可 cancellable）或 MixinExtras `@WrapOperation`，并核对运行端 Mixin 版本 | `[实测]` |
+
+### 0.2.0 启动崩溃与 0.2.1 修复（实测）
+
+- **现象**：装入 0.2.0 后启动，`Initializing game` 阶段崩溃；`Description` 显示 `Mixin transformation of net.minecraft.class_757 failed`，根因为 MixinExtras `FactoryRedirectWrapperMixinTransformer` 里 `ArrayList → AnnotationNode` 的 `ClassCastException`。`[实测：crash-2026-11-17_01.35.53-client.txt]`
+- **根因**：`GameRendererMixin` 的 `@Redirect(at=@At(...))` 编译期为 `sponge-mixin 0.17.4`（`at()` 是 `At[]`），运行期为 `0.17.0`（`at()` 是单个 `At`）。jar 内 class 反汇编确认 `at=[@At(...)]`，与运行时注解类型不匹配。`[实测：javap]`
+- **修复（0.2.1）**：移除 `@Redirect`，改为在已有帧末 `@Inject` 里每帧校正 `Options.pauseOnLostFocus`（`McbClientOps.enforceFocusKeepAlive()`）；重新构建后 jar 内已无任何 `@Redirect` 注解（`grep injection/Redirect` 为空），其余 `@Inject` 注解编码与 0.17.0 一致。`[实测：javap + gradle build]`
+- **教训**：见 `pitfalls.md` E5；编译端 Loader（0.19.5）与运行端 Loader（0.18.4）不同时，必须拿运行端实例做一次启动验证，不能把"编译通过 + 目标方法重映射成功"当成可运行。
 
 环境事实补充：
 

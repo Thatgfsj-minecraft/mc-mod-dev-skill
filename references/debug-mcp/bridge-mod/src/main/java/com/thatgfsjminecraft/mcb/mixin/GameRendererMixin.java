@@ -10,7 +10,6 @@ import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -55,39 +54,33 @@ public abstract class GameRendererMixin {
     }
 
     // =====================================================================
-    // §1.2 focus-pause guard (client.screenshot / screen.current depend on it)
+    // §1.2 focus-pause guard — deliberately NOT an @Redirect (see below)
     //
-    // Target signature verified against the decompiled 1.21.11 sources
-    // (/tmp/mc1211all): GameRenderer.render(DeltaTracker, boolean) contains
-    // exactly ONE pauseGame call, in the focus-loss branch:
+    // The guard used to be an `@Redirect` on the single focus-loss
+    // `Minecraft.pauseGame(false)` call inside GameRenderer.render. That was
+    // REMOVED after a real startup crash:
     //
-    //   if (!this.minecraft.isWindowActive() && this.minecraft.options.pauseOnLostFocus
-    //       && (!touchscreen || !mouseHandler.isRightPressed())) {
-    //       if (Util.getMillis() - this.lastActiveTime > 500L) {
-    //           this.minecraft.pauseGame(false);      // <- @Redirect target
-    //       }
-    //   }
+    //   MixinExtras.preApply -> ClassCastException: java.util.ArrayList cannot
+    //   be cast to org.objectweb.asm.tree.AnnotationNode
+    //   -> "Mixin transformation of net.minecraft.class_757 (GameRenderer) failed"
     //
-    // WHY ONLY THIS CALL SITE (hard constraint, spec §1.2 + pitfalls E3):
-    // Minecraft.pauseGame(boolean) is NOT focus-loss specific — the ESC key path
-    // also calls pauseGame(false) from KeyboardHandler. Cancelling/mixin-ing
-    // pauseGame(boolean) itself would silently break the ESC pause menu.
-    // Redirecting only the GameRenderer invocation leaves ESC untouched.
+    // ROOT CAUSE: @Redirect.at() is version-dependent in the Mixin annotation
+    // class itself. The build compiles against sponge-mixin 0.17.4+mixin.0.8.7
+    // (fabric-loader 0.19.5), whose `@Redirect.at()` returns `At[]`; the runtime
+    // client here uses sponge-mixin 0.17.0+mixin.0.8.7 (fabric-loader 0.18.4),
+    // whose `@Redirect.at()` returns a single `At`. javac therefore encoded
+    // `at = {@At(...)}` and the runtime Mixin/Fabric MixinExtras reader cast the
+    // ArrayList to AnnotationNode and crashed. `@Inject.at()` is `At[]` in both
+    // versions - that is why the @Inject hooks below are safe, and why the
+    // bridge must not use @Redirect at all. (A template that has to run across
+    // loader/Mixin versions cannot rely on @Redirect's annotation wire format.)
     //
-    // WHY A PLAIN @Redirect and not MixinExtras @WrapOperation (pitfalls E2):
-    // this bridge mod is a zero-dependency reference implementation (no
-    // fabric-api, no MixinExtras on the classpath); real mods should prefer
-    // @WrapOperation for cross-mod compatibility.
+    // Replacement guard: McbClientOps.re-asserts options.pauseOnLostFocus=false
+    // once per rendered frame while autoPauseGuard is on, from the @Inject
+    // RETURN hook below. That is annotation-version-stable, and it also keeps
+    // ESC working: ESC calls Minecraft.pauseGame directly and does not read
+    // this option - the option only gates the focus-loss branch.
     // =====================================================================
-    @Redirect(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V",
-              at = @At(value = "INVOKE",
-                       target = "Lnet/minecraft/client/Minecraft;pauseGame(Z)V"))
-    private void mcb$guardFocusPause(Minecraft mc, boolean bl) {
-        if (McbClientOps.autoPauseGuard()) {
-            return; // automated run: losing OS focus must not freeze the game
-        }
-        mc.pauseGame(bl); // guard off (client.pause_on_lost_focus enabled=true) -> vanilla
-    }
 
     // =====================================================================
     // §3.16 client.screenshot frame-end hook.

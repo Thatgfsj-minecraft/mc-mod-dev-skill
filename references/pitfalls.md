@@ -140,10 +140,14 @@ Mixin 配置里默认数组 `"mixins"` 与 `"server"` 数组会在**专用服务
 
 **E3. [实测：反编译 1.21.11] `pauseGame(boolean)` 不是"失焦专用"：ESC 也走同一个入口**
 `Minecraft.pauseGame(boolean bl)` 只做 `if (screen == null) setScreen(new PauseScreen(!bl))`。**ESC 暂停也调用它**：`KeyboardHandler.keyPressed` 里 `boolean bl2 = options.keyDebugModifier.isDown()`（F3 修饰键状态），随后 `if (bl6 && keyEvent.isEscape()) this.minecraft.pauseGame(bl2)`——普通 ESC 时 F3 没按，等价于 `pauseGame(false)`。因此**禁止**用 Mixin 粗暴取消 `pauseGame(boolean)`（或全局 `@Redirect` 该入口）：ESC 暂停菜单会一起消失。
-正确做法二选一：① **改上游开关** `Options.pauseOnLostFocus=false`（原位、可持久化，F3+P 就是这个开关的切换键：`KeyboardHandler` 里 `options.keyDebugFocusPause` 命中后取反并 `options.save()`）；② **只拦失焦调用点**——`GameRenderer.render(DeltaTracker, boolean)` 中 `if (!minecraft.isWindowActive() && options.pauseOnLostFocus && ...) { if (Util.getMillis() - lastActiveTime > 500L) minecraft.pauseGame(false); }`，只对这个具体调用点做 `@Redirect`/`@WrapOperation`，ESC 路径完全不受影响。桥接参考实现两者都做（开关 + 调用点守卫），且守卫只作用在渲染循环的失焦分支。详见 `debug-mcp/protocol.md` §3.17 与 `debug-mcp/bridge-mod/README.md` 红线。
+正确做法二选一：① **改上游开关** `Options.pauseOnLostFocus=false`（原位、可持久化，F3+P 就是这个开关的切换键：`KeyboardHandler` 里 `options.keyDebugFocusPause` 命中后取反并 `options.save()`）；② **只拦失焦调用点**——`GameRenderer.render(DeltaTracker, boolean)` 中 `if (!minecraft.isWindowActive() && options.pauseOnLostFocus && ...) { if (Util.getMillis() - lastActiveTime > 500L) minecraft.pauseGame(false); }`，只对这个具体调用点做 `@Redirect`/`@WrapOperation`，ESC 路径完全不受影响。桥接参考实现（0.2.1+）采用"上游开关 + 运行期每帧校正"，**不注入调用点**（原因见 E5）。详见 `debug-mcp/protocol.md` §3.17 与 `debug-mcp/bridge-mod/README.md` 红线。
 
 **E4. [实测：1.21.11] `@Inject` 要改返回值，必须写 `cancellable = true`**
 `@Inject` 默认不允许取消；方法体里调 `cir.setReturnValue(...)` 而未声明 `cancellable = true` 时，Mixin 在运行期抛 `CancellationException`（日志 "The call method_xxxx is not cancellable"），**渲染线程直接崩**。天眼 FOV 覆盖（`GameRenderer.getFov` TAIL）曾因此每帧必崩（`crash-2026-11-15_16.35.20-client.txt`）。规则：凡是注入后要 `setReturnValue` / `cancel` 的，`cancellable = true` 与注入一起写、不要事后补。
+
+**E5. [实测：1.21.11 / fabric-loader 版本差] `@Redirect.at()` 的注解编码跨 Mixin 版本不同 → 启动崩溃**
+同一个 `@Redirect` 注解，在不同 `net.fabricmc:sponge-mixin` 版本里 `at()` 的**返回类型不同**：`0.17.0+mixin.0.8.7`（fabric-loader 0.18.4 运行时）是单值 `At`，`0.17.4+mixin.0.8.7`（fabric-loader 0.19.5 编译 classpath）是 `At[]`。javac 按**编译期**注解类型编码：源码写 `at = @At(...)` 编到新版 classpath 会写成 `at = {@At(...)}`。这个 jar 拿到旧运行时，MixinExtras 在 `preApply` 阶段把它当单个 `AnnotationNode` 读 → `ClassCastException: java.util.ArrayList cannot be cast to org.objectweb.asm.tree.AnnotationNode` → `Mixin transformation of net.minecraft.class_757 failed` → **启动崩溃**。`[实测：crash-2026-11-17_01.35.53-client.txt；javap 两个 mixin jar 对比 at() 签名] `
+规则：① 跨 Loader 版本分发的模组**优先不用 `@Redirect`**；需要拦单个调用点时，用 `@Inject(at=@At("INVOKE" ...), cancellable=true)` 或 MixinExtras `@WrapOperation`（并核对运行端 Mixin 版本），`@Inject.at()` 在这些版本里都是 `At[]`；② 开发机上的 Loader 版本 ≠ 测试实例的 Loader 版本是常态（本机 0.18.4 vs 0.19.5），**编译期 API 版本必须以运行端为准**，发布前在真实实例上启动一次；③ 该类崩溃的日志特征是 `Mixin transformation of net.minecraft.class_XXX failed` + `ClassCastException ... AnnotationNode`，先查 jar 内注解而不是业务代码。
 
 ---
 

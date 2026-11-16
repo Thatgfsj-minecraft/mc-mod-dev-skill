@@ -1,6 +1,6 @@
 # 分级热迭代：先选最低成本的那一层，再动手
 
-> 适用环境：环境无关（Minecraft Java 模组开发通用流程）。示例命令以 MCB 参考实现（技能包 v0.5.1，bridge-mod 0.2.0；Fabric 1.21.11 桥接 + MCP Server）为具体载体；其他环境按 `debug-mcp.md` 的工具/op 对照表替换工具名。
+> 适用环境：环境无关（Minecraft Java 模组开发通用流程）。示例命令以 MCB 参考实现（技能包 v0.5.1，bridge-mod 0.2.1；Fabric 1.21.11 桥接 + MCP Server）为具体载体；其他环境按 `debug-mcp.md` 的工具/op 对照表替换工具名。
 > 验证方式：本文是流程约定 + 结构事实（原版行为经 1.21.11 反编译核实，逐条标注）。**耗时是量级估计**（同一台开发机、增量场景），不是基准测试；MCB 各 op 的运行时验证状态见 `environments/versions/1.21.11/bridge.md`。
 
 ## 1. 为什么要分级
@@ -14,7 +14,7 @@
 | 层级 | 典型改动 | 触发 / 命令 | 耗时（量级） | 验收手段 |
 |---|---|---|---|---|
 | **L1 数据热重载** | `src/main/resources/data/**`：recipe、loot table、tags、advancement、datapack function、predicate | `mc_command({command:"reload"})`（集成服；等价 `/reload`） | 秒级（1 s 左右） | `mc_command` 返回 `success:true` + **功能性探针**（跑改过的 function / loot / tag 断言）；`mc_wait_log` 抓重载错误 |
-| **L2 资源热重载** | `src/main/resources/assets/**`：PNG、model / blockstate / item model JSON、lang、font、particle、shader | `mc_reload_resources()`（桥接 0.2.0+，= 程序化 F3+T：`Minecraft.reloadResourcePacks()`）；老桥接只能用 F3+T（`keyDebugReloadResourcePacks`，默认 T，[实测：1.21.11 反编译]） | 1–3 s（随资源包体量） | `mc_logs` 搜加载错误（见 §6 规则 3）+ `mc_client_screenshot` 落盘截图 + `mc_screen_current` 确认无 Screen 遮挡 |
+| **L2 资源热重载** | `src/main/resources/assets/**`：PNG、model / blockstate / item model JSON、lang、font、particle、shader | `mc_reload_resources()`（桥接 0.2.1+，= 程序化 F3+T：`Minecraft.reloadResourcePacks()`）；老桥接只能用 F3+T（`keyDebugReloadResourcePacks`，默认 T，[实测：1.21.11 反编译]） | 1–3 s（随资源包体量） | `mc_logs` 搜加载错误（见 §6 规则 3）+ `mc_client_screenshot` 落盘截图 + `mc_screen_current` 确认无 Screen 遮挡 |
 | **L3 代码热替换** | `src/main/java/**` 里**已有方法体**、常量、局部逻辑、GUI 坐标；不新增/删除方法或字段 | Debug 启动 `runClient` + JBR 增强重定义，IDE `Reload Changed Classes` | 秒级（~1 s 重定义） | 命令复测 + `mc_screen_current` / `mc_client_screenshot`；日志确认重定义成功 |
 | **L4 完整重启** | 新增/改 `@Mixin`、类结构/字段签名/继承、注册表项、`fabric.mod.json`/`mods.toml`、依赖、版本号、Gradle 配置 | 停掉 `runClient` → 增量构建 → 重跑 | 1–3 min（增量构建 + 启动进世界） | 构建通过 + 启动日志 + 完整行为复测（见 `e2e-testing.md`） |
 

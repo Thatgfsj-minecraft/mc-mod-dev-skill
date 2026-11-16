@@ -73,7 +73,7 @@ AI agent（你）
 
 ## 6. 实战剧本（怎么把工具串成调试闭环）
 
-以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.1，bridge-mod 0.2.0，共 19 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
+以下是真实调试中验证有效的调用序列。工具名以参考实现（技能包 v0.5.1，bridge-mod 0.2.1，共 19 个 `mc_*` 工具，与协议 op 一一对应）为准，其他实现按协议 op 对应。
 
 ### 6.1 搭场景 → 看结果
 
@@ -154,7 +154,7 @@ mc_logs({ levelMin: "ERROR" })                        # 6. 画面异常时拉堆
 |---|---|---|
 | `screen_class: "net.minecraft.client.gui.screens.PauseScreen"`，`screen_title` 是暂停菜单标题 | 游戏暂停了，画面被暂停菜单挡住 | 先看 `pause_on_lost_focus`：若为 `true`，说明原版失焦暂停生效（守卫没跑 / 被兼容性测试打开）——`mc_pause_on_lost_focus({enabled:false})` 只能**防止再次**弹出，**已弹出的 PauseScreen 没有关屏 op**，需人工关掉或重启客户端 |
 | `window_focused:false` + `pause_on_lost_focus:false` + `screen_class:null` | 窗口失焦但游戏仍在跑（桥接守卫生效） | 画面可用，不必处理；别误判成"卡死" |
-| `window_focused:false` + `pause_on_lost_focus:true` + `screen_class:"…PauseScreen"` | 原版失焦自动暂停（守卫未生效 / 被关） | `mc_pause_on_lost_focus({enabled:false})` 恢复守卫；确认桥接 0.2.0+ 启动日志有 `pauseOnLostFocus disabled` |
+| `window_focused:false` + `pause_on_lost_focus:true` + `screen_class:"…PauseScreen"` | 原版失焦自动暂停（守卫未生效 / 被关） | `mc_pause_on_lost_focus({enabled:false})` 恢复守卫；确认桥接 0.2.1+ 启动日志有 `pauseOnLostFocus disabled` |
 | `screen_class` 是其它非 null 值（加载屏 / 容器界面等） | 世界或资源仍在加载，或另一个 GUI 挡着 | 等日志 / 重试截图；不要在加载屏上验收渲染 |
 
 > 结论：**防 PauseScreen 要在它出现之前**（`run/options.txt` 预置 + 桥接启动强制关，见 `e2e-testing.md`「客户端 run 目录预置」），出现之后只能人工处理。
@@ -171,6 +171,7 @@ mc_logs({ levelMin: "ERROR" })                        # 6. 画面异常时拉堆
 | 截图里是 PauseScreen / 暂停菜单 | 失焦自动暂停，或有人按了 ESC | `mc_screen_current` 看 `screen_class` 与 `pause_on_lost_focus`：失焦导致 → `mc_pause_on_lost_focus({enabled:false})` 防再次弹出；**已弹出的 Screen 没有关屏 op**，需人工关掉或重启（见 §6.6） |
 | 截图里是辅助功能引导 / 选项页 | 首次启动 onboarding 挡屏 | 启动前预置 `run/options.txt`（`onboardAccessibility=false` 等，见 `e2e-testing.md`「客户端 run 目录预置」）并重启客户端 |
 | 截图默认落在哪 | — | `<gameDir>/screenshots/`（Loom 默认 `run/screenshots/`）；`mc_client_screenshot` 返回**绝对路径**，`mc_screenshot` 只内联不落盘 |
+| 启动崩溃 `Mixin transformation of net.minecraft.class_XXX failed` + `ClassCastException: ArrayList cannot be cast to AnnotationNode` | 桥接 jar 用了 `@Redirect`，其 `at()` 注解编码在编译端/运行端 Mixin 版本间不一致（0.2.0 真实事故） | 换 bridge-mod **0.2.1+**（已移除 `@Redirect`）；自己写 Mixin 时见 `pitfalls.md` E5 |
 | `mc_client_screenshot` 只回 text + WARNING | MCP 进程读不到截图文件（游戏与 MCP 不同机 / 权限） | 按返回的绝对 `path` 直接取文件；同机时检查文件存在且非空 |
 | `mc_reload_resources` 返回 `TIMEOUT` | 资源包大 / 着色器编译慢（30s 看门狗） | 拆小资源包或接受更长耗时；**仍要** `mc_logs` 搜加载错误后再截图 |
 | 改了资源包 F3+T 没变化 | 资源没同步进运行 classpath | 先 `./gradlew processResources` 再重载（`fast-iteration.md` 规则 1） |

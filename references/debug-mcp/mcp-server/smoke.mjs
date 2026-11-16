@@ -9,7 +9,7 @@
  *    connecting to it would both touch the user's game and make the dead-bridge
  *    contract assertion flaky. Asserts: initialize, 19 tools, the exact
  *    BRIDGE_UNREACHABLE error contract, and zod argument validation.
- *  - MCB_LIVE=1: runtime acceptance against a real bridge (bridge-mod 0.2.0+).
+ *  - MCB_LIVE=1: runtime acceptance against a real bridge (bridge-mod 0.2.1+).
  *    Raw TCP ping first (there is deliberately no mc_ping tool: ops map 1:1 to
  *    tools and ping is infrastructure, not a capability), then screen.current /
  *    command.run / client.screenshot through the MCP tools. Point MCB_PORT /
@@ -154,7 +154,7 @@ for (const expected of ["mc_screen_current", "mc_client_screenshot", "mc_pause_o
 
 if (LIVE) {
   // -------------------------------------------------------------------------
-  // Live path (MCB_LIVE=1): requires a real game + bridge-mod 0.2.0+.
+  // Live path (MCB_LIVE=1): requires a real game + bridge-mod 0.2.1+.
   // -------------------------------------------------------------------------
   const pong = await livePing();
   console.log("live ping ok:", JSON.stringify(pong));
