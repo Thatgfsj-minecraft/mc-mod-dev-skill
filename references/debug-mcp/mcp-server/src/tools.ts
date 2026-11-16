@@ -16,6 +16,89 @@ import { bridge, BridgeError } from "./bridge.js";
 const intVec = z.tuple([z.number().int(), z.number().int(), z.number().int()])
   .describe("[x, y, z] integer coordinates");
 
+// ---------------------------------------------------------------------------
+// World lifecycle schemas (protocol §8, v0.5.4). The SCHEMA owns the §8.0 safe
+// defaults: a caller that only sends name + preset still gets a creative,
+// structure-free, no-natural-spawning, noon/clear, cheats-enabled test world.
+//
+// HARD RULE (§8.0): unless THIS test explicitly needs survival mechanics or
+// structure generation, keep the defaults — creative mode with structures off;
+// difficulty normal + natural mob spawning off (NOT peaceful: peaceful
+// despawns /summon'ed hostile test mobs instantly, which breaks combat tests).
+// ---------------------------------------------------------------------------
+const worldName = z.string().min(1).max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, "name may only contain A-Za-z0-9_- (no path separators, spaces or dots)")
+  .describe('save name: [A-Za-z0-9_-]{1,64}, no path separators or ".."; prefer a "mcb_" prefix (world.delete safety rule)');
+
+const worldCreateShape = {
+  name: worldName,
+  preset: z.enum(["bedrock_lab", "flat_clean", "vanilla_quiet", "void_platform"])
+    .describe("world preset: bedrock_lab (flat bedrock lab) / flat_clean (vanilla superflat) / vanilla_quiet (low-noise vanilla overworld, seed 12345) / void_platform (void + 9x9 bedrock platform at y=64)"),
+  clean_if_exists: z.boolean().default(true)
+    .describe("delete an existing save of the same name and rebuild it (default true); false + existing save -> WORLD_ALREADY_EXISTS"),
+  game_mode: z.enum(["creative", "survival", "adventure", "spectator"]).default("creative")
+    .describe("player game mode (default creative — switch only when testing survival mechanics)"),
+  generate_structures: z.boolean().default(false)
+    .describe("world structure generation: villages/fortresses/dungeons (default false — enable only when the structure itself is under test)"),
+  do_mob_spawning: z.boolean().default(false)
+    .describe("natural mob spawning (default false). This — not difficulty — is what keeps wild mobs out; difficulty stays normal"),
+  difficulty: z.enum(["peaceful", "easy", "normal", "hard"]).default("normal")
+    .describe('difficulty (default "normal"). Do NOT use "peaceful" for combat tests: it despawns /summon-ed hostiles'),
+  lock_time: z.number().int().min(0).max(23999).nullable().default(6000)
+    .describe("lock the world time to this tick, 0-23999 (default 6000 = noon); null = do not lock time"),
+  lock_weather: z.enum(["clear", "rain", "thunder"]).nullable().default("clear")
+    .describe('lock the weather (default "clear"); null = do not lock weather'),
+  fire_tick: z.boolean().default(false)
+    .describe("fire spread around the player (default false — keeps fire/explosion tests from spreading out of control)"),
+  keep_inventory: z.boolean().default(true)
+    .describe("keep inventory on death (default true — an accidental death must not destroy the test setup)"),
+  allow_commands: z.boolean().default(true)
+    .describe("allow cheats so mc_command works at permission level 4 (default true)"),
+  seed: z.number().int().optional()
+    .describe("world seed (optional — omit to let the bridge apply its default, 12345 for reproducible tests)"),
+  timeout_ms: z.number().int().min(30000).max(600000).default(120000)
+    .describe("op watchdog in ms (default 120000, range 30000-600000)"),
+};
+
+const worldDeleteShape = {
+  name: worldName,
+  force: z.boolean().default(false)
+    .describe("safely save-and-quit the world first if it is currently running (default false -> WORLD_IN_USE). Never kills the process or bypasses the save lock"),
+  timeout_ms: z.number().int().min(10000).max(300000).default(60000)
+    .describe("op watchdog in ms (default 60000, range 10000-300000)"),
+};
+
+// Exported for the offline smoke test: it asserts the §8.0 defaults by parsing
+// the very same zod schema the MCP SDK validates tool arguments with.
+export const worldCreateSchema = z.object(worldCreateShape);
+export const worldDeleteSchema = z.object(worldDeleteShape);
+
+/** Tool args -> protocol §8.1 params (snake_case input, protocol field names). */
+function worldCreateParams(args: any): Record<string, any> {
+  const params: Record<string, any> = {
+    name: args.name,
+    preset: args.preset,
+    clean_if_exists: args.clean_if_exists,
+    game_mode: args.game_mode,
+    generate_structures: args.generate_structures,
+    do_mob_spawning: args.do_mob_spawning,
+    difficulty: args.difficulty,
+    lock_time: args.lock_time,
+    lock_weather: args.lock_weather,
+    fire_tick: args.fire_tick,
+    keep_inventory: args.keep_inventory,
+    allow_commands: args.allow_commands,
+    timeoutMs: args.timeout_ms,
+  };
+  if (args.seed !== undefined) params.seed = args.seed;
+  return params;
+}
+
+/** Tool args -> protocol §8.4 params. */
+function worldDeleteParams(args: any): Record<string, any> {
+  return { name: args.name, force: args.force, timeoutMs: args.timeout_ms };
+}
+
 function text(content: unknown): { content: [{ type: "text"; text: string }] } {
   return {
     content: [{ type: "text", text: typeof content === "string" ? content : JSON.stringify(content, null, 2) }],
@@ -526,5 +609,34 @@ export function registerTools(server: McpServer): void {
       },
     },
     wrap((args: any) => bridge.request("watch.stop", { watch_id: args.watch_id }, 15000)),
+  );
+
+  // ---------------------------------------------------------------------------
+  // World lifecycle (protocol §8, v0.5.4). The bridge does the actual world
+  // selection / save-dir work; these tools keep the §8.0 safe defaults in the
+  // schema (see worldCreateShape) so "create a test world" is one call.
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "mc_world_create",
+    {
+      title: "Create a controlled test world",
+      description: "Create (or re-create) a CONTROLLED test world from a preset and wait until it is loaded and fully configured (protocol §8). HARD RULE: 除非本次明确测试生存机制或结构生成，否则保持默认创造模式与关闭结构；默认 normal 难度 + 关自然刷怪（不要用和平模式，否则 /summon 的敌对测试怪会消失）. Concretely, the defaults are creative mode, structures OFF, natural mob spawning OFF, difficulty normal, time locked at noon (6000), clear weather, fire spread off, keep-inventory on, cheats on. Every default is OVERRIDABLE (game_mode:\"survival\", generate_structures:true, lock_time:null, ...) but only when THIS test genuinely needs it — and never use difficulty=peaceful for combat/damage tests (/summon-ed hostiles despawn instantly). Presets: bedrock_lab (flat bedrock lab: blocks/redstone/machines/explosions), flat_clean (vanilla superflat: mob AI/pathfinding/crops), vanilla_quiet (low-noise vanilla overworld, seed 12345: real biomes/ores/vanilla ecosystem — use only when needed), void_platform (void + 9x9 bedrock platform at y=64: flying entities, particles, clean screenshots). This op is ASYNC and SLOW: the bridge responds only after the world is loaded and the gamerules/time/weather are applied, which can take 1-2 minutes (timeout_ms 30000-600000, default 120000). Response: world_name/preset/game_mode/difficulty/spawn/seed/gamerules_applied/time_locked/elapsed_ms. Errors: PRESET_INVALID, WORLD_ALREADY_EXISTS (clean_if_exists=false and the save exists), WORLD_IN_USE (another world op is already in flight — single-flight), TIMEOUT, INTERNAL, CLIENT_ONLY (dedicated server). Always clean up with mc_world_delete when the test is over.",
+      inputSchema: worldCreateShape,
+    },
+    // The bridge watchdog is timeout_ms (§8.1/§8.4); keep our own request
+    // timeout just above it so the bridge's TIMEOUT contract surfaces first
+    // (same headroom discipline as mc_watch_await / mc_client_screenshot).
+    wrap((args: any) => bridge.request("world.create", worldCreateParams(args), args.timeout_ms + 15000)),
+  );
+
+  server.registerTool(
+    "mc_world_delete",
+    {
+      title: "Delete a test world",
+      description: "Delete a test world save from disk (protocol §8.4) — the cleanup step after mc_world_create. SAFETY RED LINE enforced by the bridge: only saves whose name starts with \"mcb_\" OR that were created by world.create (marker file) may be deleted; a player's hand-made world can NEVER be deleted this way and returns WORLD_DELETE_FORBIDDEN — force does NOT bypass this. force=false (default): if the target world is currently loaded/running the op fails with WORLD_IN_USE; force=true: save and quit it safely back to the title screen first, then delete (no hard process kill, no bypassing the save lock). The recursive delete runs on a background thread. Errors: WORLD_NOT_FOUND, WORLD_IN_USE, WORLD_DELETE_FORBIDDEN, BAD_PARAMS, TIMEOUT, INTERNAL, CLIENT_ONLY. Response: world_name/deleted/elapsed_ms.",
+      inputSchema: worldDeleteShape,
+    },
+    wrap((args: any) => bridge.request("world.delete", worldDeleteParams(args), args.timeout_ms + 10000)),
   );
 }
