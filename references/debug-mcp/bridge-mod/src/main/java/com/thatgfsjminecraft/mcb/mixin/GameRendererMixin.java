@@ -3,9 +3,11 @@ package com.thatgfsjminecraft.mcb.mixin;
 import com.thatgfsjminecraft.mcb.McbCamera;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.GameRenderer;
+import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
@@ -29,6 +31,22 @@ public abstract class GameRendererMixin {
                                  CallbackInfoReturnable<Float> cir) {
         if (McbCamera.hasFovOverride()) {
             cir.setReturnValue(McbCamera.fovOverride());
+        }
+    }
+
+    /**
+     * Hide the player's own first-person hand while the sky-eye owns the view.
+     *
+     * The hand is NOT part of the Gui class - it is drawn by
+     * GameRenderer.renderItemInHand(float, boolean, Matrix4f) during the world
+     * render pass, so GuiMixin cannot suppress it. Leaving it in produced
+     * screenshots with a giant arm in the corner of an otherwise clean view.
+     */
+    @Inject(method = "renderItemInHand(FZLorg/joml/Matrix4f;)V", at = @At("HEAD"), cancellable = true)
+    private void mcb$suppressHand(float partialTick, boolean swingArm, Matrix4f poseStack,
+                                  CallbackInfo ci) {
+        if (McbCamera.uiSuppressed()) {
+            ci.cancel();
         }
     }
 }
