@@ -98,6 +98,8 @@
 | `watch.snapshot` | §7.5 | 立即强制出一次 t1 vs t0 对比报告（v0.5.2 新增） |
 | `watch.list` | §7.6 | 查看活跃 watch 会话元数据（v0.5.2 新增） |
 | `watch.stop` | §7.7 | 手动终止会话并释放快照（v0.5.2 新增） |
+| `world.create` | §8.1 | 按预设拉起干净测试世界（创造/无结构/无刷怪/锁正午晴天，v0.5.4 新增） |
+| `world.delete` | §8.4 | 安全删除测试存档（v0.5.4 新增） |
 
 ### 3.1 `ping`
 
@@ -438,6 +440,7 @@
 
 - `protocol` 主版本号出现在 `hello` 中。**新增 op、新增可选参数、新增响应字段 = 向后兼容，主版本号不变**。v0.5.1 新增的 §3.15–§3.18 四个 op 与 §3.9 的新增响应字段（`returnValue` / `messages` / `side`）都属这一类：`hello.protocol` 仍为 `1`，消费端必须忽略不认识的响应字段而不是报错。
 - v0.5.2 新增 §7 的五个 `watch.*` op、两种事件与相关可选字段，同样属于**纯新增**：`hello.protocol` 仍为 `1`。旧消费端对 `watch.*` 收到 `BAD_OP` 时应降级为轮询（`block.scan` / `entity.list` + 自行对比），不得判定协议不兼容。
+- v0.5.4 新增 §8 的 `world.create` / `world.delete` 两个 op、`world.progress` 事件与相关默认值，同样是**纯新增**：`hello.protocol` 仍为 `1`。旧消费端对 `world.*` 收到 `BAD_OP` 时应直接跳过并回退到"手工进世界"的旧流程，不得判定协议不兼容。
 - 删除/改名 op、改变字段语义、改变信封结构 = 主版本号 +1。
 - 消费端应对未知 op 回 `BAD_OP` 而不是断连——向前兼容由消费端降级，桥接端保持简单。
 
@@ -454,6 +457,11 @@
 | `INTERNAL` | 桥接端内部异常（message 带 Java 类名便于排障） |
 | `WATCH_NOT_FOUND` | watch_id 不存在 / 已停止且超过 60s 报告保留期（v0.5.2，§7.11） |
 | `RULE_INVALID` | watch 规则树结构错误（嵌套深度 / 节点数 / 未知 type / 缺参 / 参数越界 / 正则非法，v0.5.2，§7.11） |
+| `WORLD_NOT_FOUND` | 目标存档不存在（v0.5.4，§8.6） |
+| `WORLD_IN_USE` | 世界正在运行且未传 `force` / 未能安全退出（v0.5.4，§8.6） |
+| `WORLD_ALREADY_EXISTS` | 目标存档已存在且 `clean_if_exists=false`（v0.5.4，§8.6） |
+| `PRESET_INVALID` | `preset` 不在 4 套预设枚举内（v0.5.4，§8.6） |
+| `WORLD_DELETE_FORBIDDEN` | 试图删除非测试存档（非 `mcb_` 前缀且无 world.create 标记，v0.5.4，§8.6） |
 
 ## 6. 实现者的线程纪律（规范要求，两种实现都适用）
 
@@ -836,3 +844,196 @@
 - **串联 + 兜底**：`{"type":"any","rules":[{"type":"sequence","steps":[{"type":"on_condition","condition":{"kind":"block_match","pos":[0,64,0],"to_block":"minecraft:air"}},{"type":"after_seconds","seconds":3.0}]},{"type":"after_seconds","seconds":15.0}],"auto_stop":true}`
 - **多条件与**：`{"type":"all","mode":"latched","rules":[{"type":"on_condition","condition":{"kind":"block_state","pos":[5,64,5],"property":"lit","value":"true"}},{"type":"on_condition","condition":{"kind":"entity_removed","entity_type":"mymod:test_dummy"}}],"timeout_seconds":20,"auto_stop":true}`
 - **机器流水线**：`{"type":"interval","interval_ticks":5,"max_count":100,"auto_stop":false}`，配合 `watch.snapshot` 随时取当前态。
+
+## 8. 世界创建与清理（v0.5.4 新增，MCB v1 后向兼容扩展）
+
+> 动机：AI 自主测试每次都要经历"手工建世界 → 进错生存世界被怪打死 → 村庄/动物/天气/地形干扰观察结果"。本节把"拉起一个可控测试世界"变成协议能力：一条 `world.create` 拉起**创造模式、无结构、无自然刷怪、锁定正午晴天**的指定预设世界，测试结束用 `world.delete` 清理。
+>
+> 版本：本节 2 个 op + 1 个事件均为新增（§4）。`hello.protocol` 仍为 `1`；旧消费端遇到未知 op 会得到 `BAD_OP`，直接回退到旧流程即可。
+>
+> 客户端桥接专有：世界创建/删除依赖客户端的世界选择与存档目录管理，专用服务端实现可返回 `CLIENT_ONLY`（不影响服务端侧既有 op）。
+
+### 8.0 两条硬性默认与精简参数契约
+
+**原则 1：游戏模式默认一律创造模式。** 只要测试需求没有明确要求测生存机制（挖掘耗时、饥饿值、生存受击掉落等），一律 `creative`；仅当需求明确需要时显式传 `"game_mode": "survival"`，或测试中途用 `command.run("/gamemode survival")` 临时切换。
+
+**原则 2：结构生成默认一律关闭。** 4 套预设（含原版世界 `vanilla_quiet`）默认 `generate_structures: false`。当本次开发/测试的就是新结构（自定义地牢、遗迹、村庄建筑）时显式传 `"generate_structures": true` 打开。这是**可覆盖项，不是硬禁止**。
+
+**为什么是 normal 难度 + 关自然刷怪，而不是和平模式：** 和平难度（`peaceful`）下 `/summon` 召唤的敌对测试怪会立即消失，无法做战斗/伤害/仇恨测试。正确组合是 `difficulty: "normal"` + `do_mob_spawning: false`：既没有野怪偷袭，又随时能召唤敌对生物。实现不得为了"安全"把难度默认成 `peaceful`。
+
+精简参数契约（AI 平时只传 `name` + `preset` 两个参数，其余全部自动兜底）：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `game_mode` | `"creative"` | 原则 1 的协议化 |
+| `generate_structures` | `false` | 原则 2 的协议化 |
+| `do_mob_spawning` | `false` | 关自然刷怪（用 gamerule，不用和平模式） |
+| `difficulty` | `"normal"` | 保证召唤的敌对测试怪不消失 |
+| `lock_time` | `6000` | 锁定正午 |
+| `lock_weather` | `"clear"` | 锁定晴天 |
+| `fire_tick` | `false` | 关火焰蔓延（爆炸/火焰测试防蔓延失控） |
+| `keep_inventory` | `true` | 死亡不掉落（意外死亡不丢测试物品） |
+| `allow_commands` | `true` | 开启作弊，保证 `command.run` 能用 |
+| `seed` | `12345` | 固定种子，测试可复现（`vanilla_quiet` 尤其重要） |
+| `clean_if_exists` | `true` | 同名测试存档自动删旧建新 |
+
+### 8.1 `world.create`
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `name` | string | 是 | — | 存档目录名。只允许 `[A-Za-z0-9_-]`，长度 1–64；不得含路径分隔符/上跳。建议以 `mcb_` 开头（world.delete 安全判定与清理线索） |
+| `preset` | string | 是 | — | `bedrock_lab` / `flat_clean` / `vanilla_quiet` / `void_platform`；其他值 → `PRESET_INVALID` |
+| `clean_if_exists` | bool | 否 | `true` | 目标存档存在时先删旧再建新；`false` 时存在 → `WORLD_ALREADY_EXISTS` |
+| `game_mode` | string | 否 | `"creative"` | `creative` / `survival` / `adventure` / `spectator` |
+| `generate_structures` | bool | 否 | `false` | 世界生成结构开关 |
+| `do_mob_spawning` | bool | 否 | `false` | 自然刷怪开关 |
+| `difficulty` | string | 否 | `"normal"` | `peaceful` / `easy` / `normal` / `hard` |
+| `lock_time` | int \| null | 否 | `6000` | 0–23999 锁定该时刻；`null` 表示不锁时间 |
+| `lock_weather` | string \| null | 否 | `"clear"` | `clear` / `rain` / `thunder`；`null` 表示不锁天气 |
+| `fire_tick` | bool | 否 | `false` | 火焰蔓延开关（映射见 §8.3） |
+| `keep_inventory` | bool | 否 | `true` | 死亡不掉落 |
+| `allow_commands` | bool | 否 | `true` | 允许作弊命令 |
+| `seed` | long | 否 | `12345` | 世界种子 |
+| `timeoutMs` | int | 否 | `120000` | op 级看门狗（30000–600000），超时 → `TIMEOUT` |
+
+完整示例（所有字段都可省，示例仅为完整展示）：
+
+```json
+{
+  "id": 301,
+  "op": "world.create",
+  "params": {
+    "name": "mcb_test_explosion",
+    "preset": "bedrock_lab",
+    "clean_if_exists": true,
+    "game_mode": "creative",
+    "generate_structures": false,
+    "do_mob_spawning": false,
+    "lock_time": 6000,
+    "lock_weather": "clear",
+    "seed": 12345
+  }
+}
+```
+
+成功响应（世界已加载、gamerule/时间/天气已应用后才响应）：
+
+```json
+{"id": 301, "ok": true, "data": {
+  "world_name": "mcb_test_explosion",
+  "preset": "bedrock_lab",
+  "game_mode": "creative",
+  "difficulty": "normal",
+  "spawn": [0, -61, 0],
+  "seed": 12345,
+  "gamerules_applied": ["spawn_mobs", "advance_time", "advance_weather", "fire_spread_radius_around_player", "keep_inventory"],
+  "time_locked": 6000,
+  "elapsed_ms": 8500
+}}
+```
+
+- `spawn`：**进入世界后的实际世界出生点** `[x,y,z]`（浮点截断为整数；`void_platform` 为 `[0,65,0]`，即平台上表面）。不是请求参数的复读。
+- `gamerules_applied`：实现实际写入的 gamerule **标识符**（原版 id，随版本变化：1.21.11 为 snake_case，见 §8.3 映射表；不要输出协议参数名冒充 gamerule id）。
+- `time_locked`：实际锁定的时刻；`lock_time=null` 时返回 `null`。
+- 世界创建是**异步**的：请求到达后桥接端投递游戏线程，完成（进世界 + 应用规则）才发这一个响应；期间通过 `world.progress`（§8.5）推送阶段。响应唯一性按 §2.2。
+
+### 8.2 4 套测试世界预设
+
+全部预设都叠加 §8.0 的硬性默认（创造、关结构、关自然刷怪、normal、锁正午晴天），预设只决定地形与额外规则：
+
+| preset | 地形与结构 | 额外默认规则 | 适用场景 |
+|---|---|---|---|
+| `bedrock_lab`（基岩实验室） | 超平坦仅基岩层（3×`minecraft:bedrock`，从世界最低 Y 起），关结构 | `fire_tick=false`、`keep_inventory=true` | 测方块、机器、红石、爆炸范围（基岩不刷怪、炸不穿、不掉虚空） |
+| `flat_clean`（纯净超平坦） | 原版超平坦（1×基岩 + 2×泥土 + 1×草方块），关结构、关装饰 | — | 测生物 AI 寻路、作物/植物；需测结构时显式 `generate_structures: true` |
+| `vanilla_quiet`（低噪原版世界） | 原版主世界（seed 默认 12345），关结构 | 保留原版群系与矿脉 | 测自然地形、群系、矿脉生成、原版生态兼容 |
+| `void_platform`（虚空单平台） | 全空气虚空；出生点 `[0,64,0]` 处 9×9 基岩平台（Y=64） | 世界出生点 `(0,65,0)` | 测飞行实体、粒子特效、HUD/模型无背景干扰截图 |
+
+- `vanilla_quiet` 属"能不用就不用"档位：测试模组时噪音越少越好，仅在需要真实群系/矿脉验证时使用。
+- 结构生成是需要显式打开的覆盖项（§8.0 原则 2）。`generate_structures: true` 对超平坦预设同样生效（实现应使用世界生成器允许的结构集，而不是只改 `WorldOptions`）。
+- `void_platform` 的出生点必须落在平台上方：实现必须在世界开始 tick 后、玩家落地死亡前完成平台铺设与出生点设置；若玩家已坠落，必须把玩家传送回 `(0.5, 65, 0.5)`。响应里 `spawn` 返回玩家实际可站的出生点。
+
+### 8.3 默认值到原版机制的映射（参考实现记录：Fabric 1.21.11 Mojmap）
+
+协议只定义**语义**；实现按下表落到目标环境原版机制，并在该环境的 `bridge.md` 记录实际行为。1.21.11 起 gamerule 为 snake_case 且已移除 `doFireTick`，映射如下：
+
+| 协议参数 | 原版机制（1.21.11） | 备注 |
+|---|---|---|
+| `game_mode` | 存档 `GameType` + 玩家进入模式 | 创造模式玩家不可被自然伤害击杀，是"防被怪打死"的第一道保险 |
+| `generate_structures` | `WorldOptions.generateStructures` + 超平坦生成器结构覆盖集 | 超平坦需另置结构覆盖为空，否则村庄/要塞仍会生成 |
+| `do_mob_spawning=false` | gamerule `spawn_mobs=false` | 难度保持 normal（见 §8.0） |
+| `lock_time` | gamerule `advance_time=false` + 世界时间设为该值 | `advance_time=false` 后一次性设置即可；不需要每 tick 强制（边缘情况由实现记录） |
+| `lock_weather=clear` | gamerule `advance_weather=false` + 清空雨/雷 | 同上 |
+| `fire_tick=false` | gamerule `fire_spread_radius_around_player=0` | 1.21.11 已无 `doFireTick`；该规则语义：`-1` = 不限制蔓延范围，`0` = 只有玩家贴身时才会蔓延（等价"基本关闭"）。实现必须在 bridge.md 写明该等价关系 |
+| `keep_inventory=true` | gamerule `keep_inventory=true` | — |
+| `allow_commands=true` | 存档 `allowCommands` | 不开作弊时 `command.run` 会因权限不足失败 |
+
+### 8.4 `world.delete`
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `name` | string | 是 | — | 目标存档名 |
+| `force` | bool | 否 | `false` | 目标世界正在运行时的安全退出开关 |
+| `timeoutMs` | int | 否 | `60000` | op 级看门狗（10000–300000） |
+
+行为：
+- `force: true` 且目标世界正在运行 → 先保存并安全退回主菜单（集成服 shutdown 完成后）再删除；不能强杀进程/绕过存档锁。
+- 目标存档不存在 → `WORLD_NOT_FOUND`。
+- 目标世界正在运行且未传 `force`（或安全退出失败）→ `WORLD_IN_USE`。
+- **安全红线（强制）**：只允许删除 (a) 名字以 `mcb_` 前缀开头的存档，或 (b) 由 `world.create` 创建过的存档（存档目录内存有实现写入的 `.mcb-world.json` 标记）。两者都不满足 → `WORLD_DELETE_FORBIDDEN`。**玩家手工世界永远不允许通过本 op 删除**——这是防止 AI 误删玩家存档的硬边界，不得用"force 可绕过"之类的设计破坏它。
+- 递归删除属长 IO：在后台线程执行，不得阻塞游戏线程。
+
+响应：
+
+```json
+{"id": 302, "ok": true, "data": {"world_name": "mcb_test_explosion", "deleted": true, "elapsed_ms": 420}}
+```
+
+### 8.5 事件 `world.progress`（best-effort）
+
+创建/删除期间推送阶段进度，属 §2.3 的便利事件层（可丢弃，不得阻塞游戏线程）：
+
+```json
+{"event":"world.progress","data":{"phase":"creating","world_name":"mcb_test_explosion","preset":"bedrock_lab","elapsed_ms":1234}}
+```
+
+`phase` 取值：`preparing` / `disconnecting` / `deleting` / `creating` / `awaiting_join` / `applying` / `done` / `failed`。`failed` 之后仍必须发一次错误响应（响应唯一性）。
+
+### 8.6 错误码（本扩展新增）
+
+| code | 语义 |
+|---|---|
+| `WORLD_NOT_FOUND` | 目标存档不存在 |
+| `WORLD_IN_USE` | 目标世界正在运行且未传 `force` / 未能安全退出 |
+| `WORLD_ALREADY_EXISTS` | 目标存档已存在且 `clean_if_exists=false` |
+| `PRESET_INVALID` | `preset` 不在 4 套预设枚举内 |
+| `WORLD_DELETE_FORBIDDEN` | 试图删除非测试存档（非 `mcb_` 前缀且无 world.create 标记） |
+| `BAD_PARAMS` | 存档名非法 / 类型错误 / 参数越界 |
+| `TIMEOUT` | op 级看门狗超时 |
+| `INTERNAL` | 桥接端内部异常（message 带类名，便于排障） |
+
+错误码总表见 §5。
+
+### 8.7 实现者的线程纪律（本扩展新增，强制）
+
+1. **TCP 线程只做参数校验**：`name`/`preset`/枚举/数值范围校验可立即返回错误；其余全部投递游戏线程，异步完成后发响应（响应唯一性 §2.2）。
+2. **不阻塞游戏线程做文件长 IO**：删除存档目录、遍历/统计文件在后台线程池；删除前必须确认世界已关闭（集成服 `isShutdown`），失败返回 `WORLD_IN_USE` 而不是硬删。
+3. **建图不能从 TCP 线程 join**：世界创建会自然产生原版加载屏幕，属预期；实现只能等待游戏自身的加载流程结束。
+4. **单飞（single-flight）**：同一桥接进程同一时间只允许一个 `world.create` / `world.delete` 在飞；并发请求返回 `WORLD_IN_USE` 或 `BAD_PARAMS`，不得让状态机重入。
+5. **看门狗**：超过 `timeoutMs` 未完成 → 发 `TIMEOUT`；之后若流程才完成，**不得**再发第二个响应（只记日志）。
+6. **失败清理**：创建过程中失败（pack 加载失败/世界目录被占用/进入超时）必须尽量回到主菜单，并释放 `LevelStorageAccess` 锁，避免下一次 `world.create` 直接撞锁。
+
+### 8.8 `world.delete` 与 `world.create` 的组合示例
+
+```text
+1) world.create(name="mcb_test", preset="flat_clean", clean_if_exists=true)   # 首轮：建
+2) ... 测试 ...
+3) world.create(name="mcb_test", preset="flat_clean", clean_if_exists=true)   # 下一轮：秒重建
+4) world.delete(name="mcb_test", force=true)                                  # 收尾：清理
+```
+
+fast-iteration 纪律：固定存档名 + `clean_if_exists=true`，每轮测试从干净世界开始，杜绝残留方块/实体污染。
+
