@@ -50,7 +50,7 @@
 |---|---|---|
 | versions | `environments/versions/1.21.1/vs-1.21.11-mojmap.md` | MC 1.21.1 ↔ 1.21.11，Mojmap（四构建实测；含 1.21.4/1.21.5/1.21.8/1.21.9/1.21.10 中点边界） |
 | versions | `environments/versions/1.21.11/vs-26.x-deobf.md` | MC 1.21.11 ↔ 26.1/26.2/26.3，去混淆化时代（三线实测） |
-| versions | `environments/versions/1.21.11/bridge.md` | MCB 调试桥实现要点，MC 1.21.11 Fabric（24 个 op，含 §7 watch.*；编译探针 + 反编译核实 + watch/开发者模式部分运行时验证，状态见文件内记录） |
+| versions | `environments/versions/1.21.11/bridge.md` | MCB 调试桥实现要点，MC 1.21.11 Fabric（26 个 op，含 §7 watch.* / §8 world.*；编译探针 + 反编译核实 + watch/开发者模式部分运行时验证 + world.* 2026-11-17 真机验收，状态见文件内记录） |
 | loaders | `environments/loaders/fabric-vs-neoforge-1.21.x.md` | Fabric ↔ NeoForge，MC 1.21.x，Mojmap |
 
 版本卡覆盖（结构事实级）与缺号说明：见 `environments/versions/README.md` 覆盖表（唯一事实来源）。

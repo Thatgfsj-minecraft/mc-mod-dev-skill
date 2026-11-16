@@ -135,7 +135,7 @@ JAVA_TOOL_OPTIONS="-Dmcb.devMode=true -Dmcb.port=25585" gradle runClient
 
 > **位置**：本节是"测试前先把世界拉干净"的双端基线——客户端集成服用 MCB `mc_world_create`，专用服 E2E 用 `server.properties` + 启动 bootstrap 命令。协议契约见 `debug-mcp/protocol.md` §8，客户端工具用法见 `debug-mcp.md` §6.9。
 >
-> **依据**：`server.properties` 键名、超平坦 `generator-settings` 字段、gamerule id 均按 **1.21.11 反编译核实**（`DedicatedServerProperties` / `FlatLevelGeneratorSettings` / `FlatLayerInfo` / `FlatLevelSource` / `GameRules`）；世界建成后的实际出生点 / 刷怪 / 天气行为**待真机对照**（v0.5.4 增量能力，运行时状态以版本卡 `bridge.md` 的记录为准）。
+> **依据**：`server.properties` 键名、超平坦 `generator-settings` 字段、gamerule id 均按 **1.21.11 反编译核实**（`DedicatedServerProperties` / `FlatLevelGeneratorSettings` / `FlatLayerInfo` / `FlatLevelSource` / `GameRules`）；客户端集成服的实际出生点 / 刷怪 / 天气行为已于 2026-11-17 runClient 真机对照通过（四预设建图、gamerule、世界内重建、删除路径；详见版本卡 `bridge.md` 的 v0.5.4 运行时记录）；**专用服侧**的 `server.properties` 键名与生成器字段仍为反编译核实、未起专用服逐项对照。
 
 ### 客户端集成服：首次进世界前先建图
 
