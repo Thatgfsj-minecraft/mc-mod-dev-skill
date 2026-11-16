@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 
@@ -84,6 +85,10 @@ public final class McbClientOps {
      */
     static void enforceFocusKeepAlive() {
         if (!autoPauseGuard) return;
+        // Developer-mode gate (0.4.0): the per-frame guard must never touch
+        // pauseOnLostFocus while the bridge is inactive — answering "no" (or
+        // -Dmcb.devMode=false) has to keep vanilla pause behaviour byte-for-byte.
+        if (!McbMod.isDevModeActive()) return;
         try {
             Minecraft mc = Minecraft.getInstance();
             if (mc != null && mc.options != null && mc.options.pauseOnLostFocus) {
@@ -158,6 +163,38 @@ public final class McbClientOps {
         McbMod.LOGGER.info(
                 "[MCB] pauseOnLostFocus disabled (lost focus no longer pauses the game; auto_pause_guard={})",
                 autoPauseGuard);
+    }
+
+    // =====================================================================
+    // Developer-mode prompt — "politely queued" on the client tick
+    //
+    // WHY NOT TitleScreen#init: the title screen may still be covered by the
+    // loading overlay, or another mod may be showing its own update/warning
+    // prompt. Opening a screen there would swallow that prompt. Instead we wait
+    // for ALL of: once-per-session flag, no overlay, a TitleScreen (including a
+    // custom main menu that extends it), and an unresolved ASK_ON_TITLE mode.
+    // Only then do we hand control to McbDevModeScreen, whose callback restores
+    // the captured parent screen.
+    // =====================================================================
+    private static volatile boolean devModePromptShown;
+
+    /** Called from MinecraftMixin at the end of every client tick. */
+    public static void onClientTick() {
+        if (devModePromptShown) return;
+        try {
+            if (McbMod.devModeMode() != McbDevModeConfig.Mode.ASK_ON_TITLE) return;
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null || mc.screen == null) return;
+            if (mc.getOverlay() != null) return; // loading / splash overlay still up
+            if (!(mc.screen instanceof TitleScreen)) return; // another screen owns the turn
+            Screen parent = mc.screen;
+            devModePromptShown = true; // never prompt again in this JVM
+            McbMod.LOGGER.info("[MCB] developer-mode prompt shown (parent={})", parent.getClass().getName());
+            mc.setScreen(McbDevModeScreen.create(parent));
+        } catch (Throwable t) {
+            // A dev tool must never take the client tick down.
+            McbMod.LOGGER.warn("[MCB] developer-mode prompt failed (ignored): {}", t.toString());
+        }
     }
 
     // =====================================================================

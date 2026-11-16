@@ -1,8 +1,8 @@
 # mc-debug-bridge — 极简调试桥（Fabric 1.21.11 参考实现）
 
 > 适用环境：MC 1.21.11 · Fabric · Mojmap · JDK 21 · Loom 1.17.21（组织已验证坐标，见 `../../../environments/versions/1.21.11/README.md`）
-> 协议：[MCB v1](../protocol.md)（v0.5.1 起含 `screen.current` / `client.screenshot` / `client.pause_on_lost_focus` / `client.reload_resources` 与 `command.run` 的 `side`；v0.5.2 起含 §7 `watch.start/await/snapshot/list/stop` 五 op + `watch.triggered/watch.stopped` 两事件）
-> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 新增能力的运行时状态以版本卡为准）。
+> 协议：[MCB v1](../protocol.md)（v0.5.1 起含 `screen.current` / `client.screenshot` / `client.pause_on_lost_focus` / `client.reload_resources` 与 `command.run` 的 `side`；v0.5.2 起含 §7 `watch.start/await/snapshot/list/stop` 五 op + `watch.triggered/watch.stopped` 两事件；v0.5.3 起默认不启动调试端口，由开发者模式确认弹窗或 `-Dmcb.devMode=true` 决定）
+> 验证方式：`gradle build` 编译通过（编译探针）；运行时行为验证记录在版本卡 `bridge.md`（v0.5.1 / v0.5.2 / v0.5.3 新增能力的运行时状态以版本卡为准）。
 
 这是 MCB v1 协议的**首个参考实现**。它存在的意义不是"装上就能用"（当然也能用），而是**作为模板**：任何 AI 拿着协议规范 + [PORTING.md](PORTING.md)，就应该能为其他 Loader / 其他版本写出等价物。
 
@@ -25,14 +25,17 @@
 | `WatchRules.java` | 896 | §7.2 | 规则树解析/强校验/逐 tick 状态机（5 基础 + any/all/sequence/repeat + 超时兜底） |
 | `WatchSession.java` | 792 | §7.1 / §7.3 / §7.4 / §7.9 | 会话配置、t0、采样节奏、报告缓冲/await、auto_stop/保留期、final_report |
 | `WatchEngine.java` | 482 | §7.4–§7.9 | 全局注册表、tick 泵、生命周期回收、事件广播 |
-| `McbClientOps.java` | 390 | §3.15–§3.18 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；以及失焦暂停守卫标志 `autoPauseGuard()` |
+| `McbDevModeConfig.java` | 197 | 0.4.0 三层优先级 | JVM 参数 > 记住的配置文件 > ASK；`config/mcb-bridge.properties` 读写；来源 Mod 名/ID 读取（`source_mod_name` 可覆盖），所有异常降级 ASK |
+| `McbDevModeScreen.java` | 96 | 0.4.0 确认屏 | 继承 `ConfirmScreen`；保存 parent；【是】激活并返回 parent、【否】直接返回；可选“记住本次选择”写入配置 |
+| `mixin/MinecraftMixin.java` | 30 | 0.4.0 弹窗排队 | Client Tick RETURN `Inject` → `McbClientOps.onClientTick()`；四重守门，单次启动只弹一次 |
+| `McbClientOps.java` | 457 | §3.15–§3.18 / 0.4.0 弹窗排队 | **客户端状态 op**：`screen.current` JSON、暂停开关读写、`client.screenshot` 抓帧调度、`client.reload_resources`；以及失焦暂停守卫标志 `autoPauseGuard()` |
 | `McbScreenshot.java` | 147 | §3.11 / §3.16 | PNG 编码：§3.11 内联 base64；§3.16 `captureToFile` 帧末抓帧 → IO 线程写盘（渲染线程只读像素） |
 | `McbCamera.java` | 230 | §3.12 / §3.14 | 天眼自由相机：姿态/FOV 覆盖、UI 抑制、相机射线 `camera.look` |
 | `mixin/CameraMixin.java` | 46 | §3.12 | `Camera.setup` TAIL 覆盖姿态 |
 | `mixin/GameRendererMixin.java` | 120 | v0.5.1 失焦保活 / §3.12 / §3.16 | FOV 覆盖（`getFov` TAIL）、第一人称手屏蔽、**帧末抓帧注入 + 失焦开关每帧校正**（`onFrameEnd`；**不用 `Redirect`**，原因见红线 7） |
 | `mixin/GuiMixin.java` | 58 | §3.12 | 天眼期间按元素屏蔽原版 HUD |
 
-> 行数为量级（v0.5.2 watch 落地后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
+> 行数为量级（v0.5.3 开发者模式落地后），以 `wc -l` 为准；三个 Mixin 类都必须在 `mcb.mixins.json` 的 **`client` 数组**里（它们引用 `Options` / `Screen` / `Gui` 等客户端类，放 common 数组会让专用服务端 ClassNotFound）。
 
 ## 失焦保活（v0.5.1，为什么这样改）
 
@@ -106,15 +109,54 @@
 - **属性变化计入方块变化**：BlockState 变化（如 `lit` 翻转）算一次 changed，`transitions` 可能出现 `minecraft:foo -> minecraft:foo` 同 id 键（from/to 是 state id 投影）。
 - `watch.start` 被看门狗超时后若服务端回调迟到，会话可能已注册但客户端不知道 id；此类孤儿会话由 auto_stop / 空闲回收 / 生命周期清理消化（已知窗口）。
 
+## 开发者模式确认弹窗（0.4.0 新增）
+
+默认启动不监听任何端口，也不修改任何原版设置。进入主页面后弹一次独立的原版风格 `ConfirmScreen`，询问“是否开启开发者模式？”；只有点【是】才调用幂等的 `McbMod.activateDevMode()`（TCP 服务 + WatchEngine + 失焦保活）。
+
+为什么不做成 TitleScreen 按钮：主界面被 Mod Menu / FancyMenu / ReplayMod 等改造后，写死坐标的按钮必然抢位。这里完全不改 TitleScreen 布局，而是保存弹窗前的 `minecraft.screen` 作为 parent，回答后 `setScreen(parent)` 还原；哪怕主界面被别的 Mod 整体替换也能返回。
+
+礼貌排队（四重守门，任一不满足就等下一 tick）：
+
+| # | 条件 | 作用 |
+|---|---|---|
+| 1 | `hasPromptedThisSession == false` | 单次 JVM 只弹一次；进出存档回主页面不重复弹 |
+| 2 | `minecraft.getOverlay() == null` | 加载遮罩/启动屏已消失，不把弹窗叠在加载动画上 |
+| 3 | `minecraft.screen instanceof TitleScreen` | 当前是主页面（含扩展 TitleScreen 的自定义主界面）；别的 Mod 弹窗占屏时持续等待，关闭后回到 TitleScreen 再弹 |
+| 4 | 开发者模式判定仍为 `ASK_ON_TITLE` | 前两层开关未命中时才询问 |
+
+三层优先级：
+
+| 优先级 | 来源 | 行为 |
+|---|---|---|
+| 1（最高） | JVM：`-Dmcb.devMode=true` / `-Dmcb.devMode=false` | 静默开/关，绝不弹窗；非法值按未传处理。自动化/CI 必走此层 |
+| 2 | `config/mcb-bridge.properties` 且 `remember_choice=true` | 按记录的 `dev_mode` 静默执行，不弹窗 |
+| 3（默认） | 以上均未命中 | 进入主页面后弹一次确认屏 |
+
+配置文件（Fabric 配置目录，通常即 `run/config/mcb-bridge.properties`）：
+
+```properties
+# mcb-bridge 开发者模式偏好（由弹窗“记住本次选择”写入，也可手工编辑）
+remember_choice=false
+dev_mode=true
+# 可选：覆盖弹窗中显示的来源 Mod 名称（默认自动读取 fabric.mod.json 的 name/id）
+source_mod_name=
+```
+
+- 文件不存在 / 字段缺失 / 类型非法 / IO 失败 → 降级为 `ASK_ON_TITLE`，启动永不因配置失败崩溃；
+- `source_mod_name` 非空时覆盖弹窗来源名，宿主项目复用 bridge-mod 时无需改代码即可显示宿主名；
+- 自动化无人值守启动必须带 `-Dmcb.devMode=true`（否则会停在确认屏）；端口可用 `-Dmcb.port=NNNN` / `MCB_PORT` 覆盖；
+- `activateDevMode()` 幂等：重复调用不会重复开端口、不会重复改 `pauseOnLostFocus`；
+- 点【否】/`-Dmcb.devMode=false` 时：不监听端口、不改 `pauseOnLostFocus`、不启动 WatchEngine，行为与原版一致。
+
 ## 构建与安装
 
 ```bash
 cd references/debug-mcp/bridge-mod
 ./gradlew build          # 需要 Gradle 9.5.1（见版本卡）；wrapper 未入库，可 `gradle wrapper` 生成
-# 产物: build/libs/mc-debug-bridge-0.3.0.jar
+# 产物: build/libs/mc-debug-bridge-0.4.0.jar
 ```
 
-把 jar 放进游戏实例的 `mods/` 文件夹即可。游戏启动后桥接监听 `127.0.0.1:25585`；改端口用 JVM 参数 `-Dmcb.port=NNNN`。
+把 jar 放进游戏实例的 `mods/` 文件夹即可。首次进入主页面会询问是否开启开发者模式：点【是】后桥接监听 `127.0.0.1:25585`（或 `-Dmcb.port=NNNN` 指定的端口）；点【否】保持纯原版。自动化 runClient/E2E 用 `-Dmcb.devMode=true` 跳过弹窗；只想彻底关闭用 `-Dmcb.devMode=false`。
 
 联调可用任何 MCP 客户端 + 本目录同级 `mcp-server/`（协议参考消费端）。
 
@@ -130,3 +172,5 @@ cd references/debug-mcp/bridge-mod
 8. **禁止强制加载区块**——采样/条件读方块前必须先 `Level.isLoaded(pos)`；`Level.getBlockState` 会走 `getChunk(...)`。
 9. **`watch.await` / 事件推送不得阻塞游戏线程**——await 只在 `LOG_WAIT_POOL` 线程等 session monitor；事件只做非阻塞 `offer`，满则丢并计入 `droppedEvents`。
 10. **Mixin 选择 + 注解版本陷阱**——本参考实现只用原版 Mixin 的 `Inject`（`Inject.at()` 在 sponge-mixin 0.17.0 / 0.17.4 都是 `At[]`，跨 Loader 版本稳定）；**不要用 `Redirect`**：它的 `at()` 在 0.17.0 是单值、0.17.4 是 `At[]`，编译端与运行端 Mixin 版本不一致时注解编码对不上，MixinExtras `preApply` 会抛 `ClassCastException: ArrayList cannot be cast to AnnotationNode` 导致启动崩溃（0.2.0 真实事故）。正式模组优先 MixinExtras 的 `WrapOperation` / `ModifyExpressionValue`（并且同样要核对运行时 Mixin 版本）。引用 `Options` / `Screen` 的 Mixin 必须放 `mcb.mixins.json` 的 `client` 数组。
+11. **开发者模式弹窗不得改 TitleScreen 布局、不得在 init 里硬切屏幕**——用 `McbDevModeScreen`（独立 ConfirmScreen）+ `McbClientOps.onClientTick()` 四重守门；保存弹窗前 screen 作为 parent 并在回答后还原，才能与其他主界面 Mod 共存而不互相顶掉。
+12. **激活必须幂等且延后；自动化必须带 `-Dmcb.devMode=true`**——`McbMod.activateDevMode()` 用 AtomicBoolean 只执行一次；点【否】/JVM=false 时不得占用端口或修改 `pauseOnLostFocus`。无人值守 runClient/E2E 不带该参数会停在确认屏。

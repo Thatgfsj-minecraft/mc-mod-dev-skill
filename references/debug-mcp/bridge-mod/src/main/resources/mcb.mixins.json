@@ -6,7 +6,8 @@
   "client": [
     "CameraMixin",
     "GameRendererMixin",
-    "GuiMixin"
+    "GuiMixin",
+    "MinecraftMixin"
   ],
   "injectors": {
     "defaultRequire": 1

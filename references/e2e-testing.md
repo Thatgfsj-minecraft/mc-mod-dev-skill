@@ -105,8 +105,31 @@ presetClientOptions("run", {
 - **不要整文件覆盖**：`options.txt` 还有几十上百个键（键位、音量、语言…），覆盖会冲掉用户配置；只增改需要的键。
 - Loom 默认 `runDir` 是项目根的 `run/`；如果项目在 `build.gradle` 的 `runs { client { runDir ... } }` 里改过目录，脚本路径要跟着改。
 - **F3+P 是原版切换键**（1.21.11 `KeyboardHandler.handleDebugKeys` 里 `options.keyDebugFocusPause` 切换 `pauseOnLostFocus` 并 `options.save()`，[实测：1.21.11 反编译]），但**自动化不要靠按键注入**——窗口焦点、键码、输入法都不可靠。用 `options.txt` 预置 + 运行时 `mc_screen_current` 读 `pause_on_lost_focus` 核实；需要临时恢复原版行为做兼容测试时用 `mc_pause_on_lost_focus({enabled:true})`。
-- **桥接 Mod 0.2.1+ 启动会强制关一次**（`pauseOnLostFocus=false`，运行期还会每帧校正，见 `environments/versions/1.21.11/bridge.md`），这是最后一道保险；但只覆盖装了该 Mod 的客户端，纯原版客户端仍要靠 options.txt。
+- **桥接 Mod 0.4.0+ 仅在开发者模式激活后**才强制关一次 `pauseOnLostFocus`（运行期每帧校正，见 `environments/versions/1.21.11/bridge.md`）；`-Dmcb.devMode=false` 或弹窗点【否】时保持原版选项，纯原版客户端/关闭态仍要靠 options.txt。
 - **options.txt 是"建议预置"而非硬保证**：原版在退出/改设置时会**重写整个文件**（[实测：1.21.11 反编译] `Options.save` 遍历全部选项写盘）。若有人在游戏里按了 F3+P、或兼容性测试把 `pause_on_lost_focus` 打开过，下次写盘会保留该值——所以每次启动前都要重写，而不是只在镜像里预置一次。
+
+### 开发者模式弹窗旁路（bridge-mod 0.4.0+）
+
+bridge-mod 0.4.0 起**默认启动不监听调试端口**：进入主页面会弹一次“是否开启开发者模式？”确认屏。无人值守的 `gradle runClient` / IDE 开发实例如果只是等 MCP 连接，会一直停在确认屏上——这是比 PauseScreen 更隐蔽的卡死，因为游戏本身没有报错。
+
+**自动化启动必须显式带 JVM 参数**：
+
+```bash
+# gradle：通过 JAVA_TOOL_OPTIONS 或 init 脚本/JavaExec jvmArgs 注入
+JAVA_TOOL_OPTIONS="-Dmcb.devMode=true -Dmcb.port=25585" gradle runClient
+
+# IDE run configuration：VM options
+-Dmcb.devMode=true -Dmcb.port=25585
+```
+
+- `-Dmcb.devMode=true`：跳过弹窗立即启动桥接（端口监听、MCP 可连、失焦保活生效）；
+- `-Dmcb.devMode=false`：跳过弹窗并完全关闭桥接（用于“纯原版行为”对照）；
+- 不带该参数且没有 `config/mcb-bridge.properties` 的 `remember_choice=true` 时会弹窗——**CI 里视为失败条件**，启动脚本必须显式传参；
+- 端口用 `-Dmcb.port=NNNN` / `MCB_PORT` 指定；并行 runClient 实例要错开端口；
+- 选项 1（JVM）优先于配置文件；配置 `remember_choice=true` / `dev_mode=...` 只是第二层；
+- 若确认屏曾把 `pauseOnLostFocus` 关掉，那是点【是】后的预期行为；点【否】/`-Dmcb.devMode=false` 时 bridge 不应改任何原版选项（版本卡的运行时记录有对照）。
+
+> 本节与上一节的 `options.txt` 预置**互补**：`devMode=true` 时桥接会在启动后关 `pauseOnLostFocus`；`devMode=false` 或未装桥接时，仍要靠 `options.txt` 预置来防失焦暂停。
 
 ## 运行序列
 
