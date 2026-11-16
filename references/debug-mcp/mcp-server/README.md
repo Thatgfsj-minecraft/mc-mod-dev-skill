@@ -1,7 +1,7 @@
 # mc-debug-mcp — MCB v1 消费端参考实现
 
 > 环境无关：只认 [MCB v1 协议](../protocol.md)，不知道对面是 Fabric 还是 NeoForge。
-> 验证方式：`npm run build` + `node smoke.mjs`（离线契约）+ `node integration.mjs`（假桥透传）；运行时联调记录在版本卡 `bridge.md`。
+> 验证方式：`npm run build` + `node smoke.mjs`（离线契约）+ `node integration.mjs`（假桥透传）；运行时联调记录在版本卡 `bridge.md`。2026-11-17 已对 bridge-mod 0.5.0 真机跑通 `MCB_LIVE=1` 的 smoke / integration（含 `mc_world_create → mc_status → mc_world_delete` 世界闭环）。
 
 ## 快速开始
 
@@ -17,7 +17,7 @@ npm install && npm run build
 
 ## 工具 ↔ op 映射
 
-工具与 op 一一对应（协议 §3 与 §7），工具不额外发明抽象；标 **0.2.1+** / **0.3.0+** 的工具分别需要 bridge-mod 0.2.1 / 0.3.0 及以上，旧桥会对未知 op 回 `BAD_OP`（消费端应降级为轮询，见协议 §7 头注）。
+工具与 op 一一对应（协议 §3 / §7 / §8），工具不额外发明抽象；标 **0.2.1+** / **0.3.0+** / **0.4.0+** 的工具分别需要 bridge-mod 0.2.1 / 0.3.0 / 0.5.0（协议 v0.5.4）及以上，旧桥会对未知 op 回 `BAD_OP`（消费端应降级为轮询 / 手工建世界，见协议 §7、§8 头注）。
 
 | MCP 工具 | op | 说明 |
 |---|---|---|
@@ -40,6 +40,8 @@ npm install && npm run build
 | `mc_watch_snapshot` | `watch.snapshot` | 立即出一次对比报告（不改规则状态、不入缓冲）**0.3.0+** |
 | `mc_watch_list` | `watch.list` | 活跃会话元数据（无参数）**0.3.0+** |
 | `mc_watch_stop` | `watch.stop` | 手动终止并取 `final_report`（只有 owner 能停）**0.3.0+** |
+| `mc_world_create` | `world.create` | 按预设拉起受控测试世界：默认创造 / 关结构 / 关自然刷怪 / normal / 锁正午晴天（协议 v0.5.4 新增）**0.4.0+** |
+| `mc_world_delete` | `world.delete` | 安全删除测试存档：仅 `mcb_` 前缀或 world.create 标记，玩家手工世界永不可删（协议 v0.5.4 新增）**0.4.0+** |
 | `mc_move_player` | `player.move` | 带地面安全的传送（虚空自动垫玻璃） |
 | `mc_camera_eye` | `camera.eye` | 天眼一次性取景截图（不移动玩家） |
 | `mc_camera_set` | `camera.set` | 进入持久自由相机 |
@@ -73,14 +75,32 @@ npm install && npm run build
 - **客户端桥接限制**：参考 Fabric 客户端桥接只在**集成服务端**（单人存档）可用；多人世界 / 专用服务端未集成时返回 `WORLD_NOT_LOADED`，这不是协议限制。同一桥接端最多 8 个活跃会话。
 - 省略的可选字段（`origin` / `dimension` / `report_mode` / `detail_limit` / `max_entity_count` / `after_seq` / `wait_ms`）不会在消费端补默认值，由桥接端套 §7.1 / §7.4 的默认值。
 
+### 测试世界（`mc_world_*`，协议 §8 / v0.5.4）
+
+用一条 `mc_world_create` 拉起**可控测试世界**，测试结束 `mc_world_delete` 清理，避免「手工建世界 → 进错生存世界被怪打死 → 村庄/动物/天气干扰观察结果」。
+
+```text
+1) mc_world_create { name: "mcb_test", preset: "flat_clean" }   → 建图（默认创造/关结构/关自然刷怪）
+2) mc_status                                                     → worldLoaded / timeOfDay / gamemode 复查
+3) ... 用 mc_command / mc_watch_* 做测试 ...
+4) mc_world_delete  { name: "mcb_test", force: true }            → 收尾删除（force：正在运行则先安全退回主菜单）
+```
+
+- **默认值写死在工具 schema**（协议 §8.0）：只传 `name` + `preset` 就会自动带上 `clean_if_exists=true` / `game_mode="creative"` / `generate_structures=false` / `do_mob_spawning=false` / `difficulty="normal"` / `lock_time=6000` / `lock_weather="clear"` / `fire_tick=false` / `keep_inventory=true` / `allow_commands=true` / `timeout_ms=120000`；`seed` **不在消费端补默认值**（由桥接端给 12345）。
+- **硬原则**：除非本次明确测试生存机制或结构生成，否则保持默认创造模式与关闭结构；默认 `normal` 难度 + 关自然刷怪（**不要用和平模式**——和平难度下 `/summon` 的敌对测试怪会立即消失，战斗/伤害/仇恨测试做不了）。所有默认都可显式覆盖（`game_mode:"survival"`、`generate_structures:true`、`lock_time:null`…），但只有本次测试确实需要时才覆盖。
+- **预设**：`bedrock_lab`（超平坦基岩实验室：方块/红石/机器/爆炸范围）/ `flat_clean`（纯净超平坦：生物 AI、作物）/ `vanilla_quiet`（低噪原版世界，seed 12345：真实群系/矿脉）/ `void_platform`（虚空 + 9×9 基岩平台：飞行实体、粒子、干净截图）。
+- **超时**：建图是异步长操作（进世界 + 应用规则后才响应，可能 1–2 分钟），`timeout_ms` 范围 30000–600000（默认 120000）；消费端请求超时比桥接看门狗多留余量，让桥接的 `TIMEOUT` 契约先于本地掐断生效（同截图 / 热重载的看门狗纪律）。
+- **错误码原样透传为 `[MCB <code>]`**：`PRESET_INVALID` / `WORLD_ALREADY_EXISTS`（`clean_if_exists=false` 且存档已存在）/ `WORLD_IN_USE`（世界正在运行，或另一个 world op 在飞——协议 §8.7 单飞）/ `WORLD_NOT_FOUND` / `WORLD_DELETE_FORBIDDEN`（**安全红线**：只允许删 `mcb_` 前缀或 world.create 写入标记的存档；玩家手工世界永远删不了，`force` 也不能绕过）/ `TIMEOUT` / `INTERNAL`。
+- 与 op 一一对应，无第二套抽象；`world.progress` 事件属 best-effort 便利层，MCP 消费端目前不消费事件流（响应唯一性由 §2.2 保证）。
+
 ## 测试
 
 ```bash
 npm run build && node smoke.mjs && node integration.mjs
 ```
 
-- `smoke.mjs`（默认离线）：不需要游戏。它给 MCP 进程指定一个**刚被释放的空闲端口**（不会去碰默认 25585 上可能正在跑的游戏），断言 initialize、24 个工具（含 5 个 `mc_watch_*`）、死桥 `BRIDGE_UNREACHABLE` 契约（普通工具 + `mc_watch_list`）与 zod 参数校验（如非整数 `wait_ms` 在消费端被拒、不上线）。
-- `integration.mjs`：自己起一个**假桥**（随机端口 25586+），逐 op 严格校验线上参数形状（扁平 x/y/z、截图文件名只能是 basename、`hide_hud` 布尔、`side` 枚举……）并断言 4 个 0.2.1 工具与 `mc_command` 的透传。watch 场景覆盖完整剧本 **start（爆炸配置）→ await（matched，报告原样透传）→ stop（final_report）**，另断言 `tracks` / `upload_rule`（含未知字段）原样到达、`after_seq` / `wait_ms` 为整数且范围正确、`matched:false` + `next_seq` 游标分支、snapshot/list/stop 的 wire shape，以及省略的可选字段不被补默认值。不需要游戏。
+- `smoke.mjs`（默认离线）：不需要游戏。它给 MCP 进程指定一个**刚被释放的空闲端口**（不会去碰默认 25585 上可能正在跑的游戏），断言 initialize、26 个工具（含 5 个 `mc_watch_*` 与 2 个 `mc_world_*`）、死桥 `BRIDGE_UNREACHABLE` 契约（普通工具 + `mc_watch_list` + 两个 world 工具）与 zod 参数校验（如非整数 `wait_ms`、非法 `preset` / `game_mode` 在消费端被拒、不上线）；另直接 parse 工具的 zod schema，断言协议 §8.0 的世界默认值齐全（离线可验，不依赖游戏）。
+- `integration.mjs`：自己起一个**假桥**（随机端口 25586+），逐 op 严格校验线上参数形状（扁平 x/y/z、截图文件名只能是 basename、`hide_hud` 布尔、`side` 枚举……）并断言 4 个 0.2.1 工具与 `mc_command` 的透传。watch 场景覆盖完整剧本 **start（爆炸配置）→ await（matched，报告原样透传）→ stop（final_report）**，另断言 `tracks` / `upload_rule`（含未知字段）原样到达、`after_seq` / `wait_ms` 为整数且范围正确、`matched:false` + `next_seq` 游标分支、snapshot/list/stop 的 wire shape，以及省略的可选字段不被补默认值。world 场景在独立模块 `world-ops.mjs`（假桥 handler + 断言 + LIVE 路径，拆文件以控制在 1000 行内）：校验 §8.0 默认值全部落到线上参数、`timeout_ms → timeoutMs` 字段名映射、`null` 锁定值、`seed` 不被补默认、非法存档名消费端拒绝，以及 §8.4 安全红线（`WORLD_DELETE_FORBIDDEN`）错误码透传。不需要游戏；`MCB_LIVE=1 node integration.mjs` 会额外跑真机的 world 建/删路径（默认跳过）。
 - `smoke.mjs` 的**活桥模式**（运行时验收，需要游戏 + bridge-mod 0.2.1+）：
 
   ```bash
@@ -88,7 +108,7 @@ npm run build && node smoke.mjs && node integration.mjs
   MCB_LIVE=1 MCB_PORT=25600 node smoke.mjs
   ```
 
-  活桥模式先裸 TCP `ping`，然后断言 `mc_screen_current` 的 `pause_on_lost_focus === false`（v0.5.1 失焦保活）、`mc_command time set noon` 的 `success === true`、以及 `mc_client_screenshot(filename="mcb_smoke.png")` 返回 image content 且文件存在非空。不设 `MCB_LIVE` 时完全不连游戏。
+  活桥模式先裸 TCP `ping`，然后断言 `mc_screen_current` 的 `pause_on_lost_focus === false`（v0.5.1 失焦保活）、`mc_command time set noon` 的 `success === true`、以及 `mc_client_screenshot(filename="mcb_smoke.png")` 返回 image content 且文件存在非空；最后按 **mc_world_create → mc_status → mc_world_delete** 顺序验收协议 §8 世界闭环（预设 `flat_clean`、断言 §8.0 默认值确实生效、删图后 `mc_status` 回到未加载）。桥接端版本低于 0.5.0（不认 `world.*`）时回 `BAD_OP`，该段自动跳过而不是失败。不设 `MCB_LIVE` 时完全不连游戏。
 
 ## 实现要点（换语言重写时对照）
 

@@ -13,7 +13,7 @@ import { registerTools } from "./tools.js";
 
 const server = new McpServer({
   name: "mc-debug-mcp",
-  version: "0.3.0",
+  version: "0.4.0",
 });
 
 registerTools(server);

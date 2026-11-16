@@ -7,16 +7,24 @@
  * a write-to-null never happens when the connection never opens.
  *
  * The fake bridge speaks MCB v1 well enough to answer status / block.get /
- * command.run / screen.current / client.* / ping, and STRICTLY validates every
- * params shape it receives (flat x/y/z, basename-only screenshot filename,
- * boolean hide_hud, the command.run side enum, ...) so a consumer regression
- * like the P0-2 tuple-as-x bug fails here immediately.
+ * command.run / screen.current / client.* / watch.* / world.* / ping, and
+ * STRICTLY validates every params shape it receives (flat x/y/z, basename-only
+ * screenshot filename, boolean hide_hud, the command.run side enum, the §8.0
+ * world defaults, ...) so a consumer regression like the P0-2 tuple-as-x bug
+ * fails here immediately.
+ *
+ * The last block (protocol §8 real-machine path) only runs with MCB_LIVE=1 and
+ * talks to an actual game: create a throwaway world -> status -> delete it. It
+ * is skipped by default, so this whole suite still needs no game.
  */
 import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+// Protocol §8 (world lifecycle) test support lives in its own module: fake-bridge
+// handlers, wire-shape assertions and the MCB_LIVE=1 real-machine path.
+import { handleWorldOp, runWorldCreateDeleteChecks, runLiveWorldPath } from "./world-ops.mjs";
 
 const PORT = 25586 + Math.floor(Math.random() * 2000);
 
@@ -394,7 +402,12 @@ const server = net.createServer((socket) => {
           reply({ stopped: true, final_report: { ...WATCH_REPORT, trigger_reason: "after_seconds(3.0)" } });
           break;
         }
-        default: fail("BAD_OP", `unknown op: ${req.op}`);
+        default:
+          // Protocol §8 ops are handled in world-ops.mjs (line-budget split);
+          // anything still unknown is a genuine BAD_OP.
+          if (!handleWorldOp(req.op, req.params ?? {}, reply, fail)) {
+            fail("BAD_OP", `unknown op: ${req.op}`);
+          }
       }
     }
   });
@@ -403,46 +416,67 @@ server.listen(PORT, "127.0.0.1");
 
 await new Promise((r) => server.on("listening", r));
 
-const proc = spawn(process.execPath, ["dist/index.js"], {
-  stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, MCB_PORT: String(PORT) },
-});
-let outBuf = "";
-const responses = new Map();
-proc.stdout.on("data", (chunk) => {
-  outBuf += chunk;
-  let idx;
-  while ((idx = outBuf.indexOf("\n")) >= 0) {
-    const line = outBuf.slice(0, idx).trim();
-    outBuf = outBuf.slice(idx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      if (msg.id !== undefined) responses.set(msg.id, msg);
-    } catch { /* ignore */ }
-  }
-});
-proc.stderr.on("data", (d) => process.stderr.write(d));
-proc.on("exit", (code) => {
-  console.error(`MCP server exited early (code=${code})`);
-  process.exit(1);
-});
-
-function send(obj) {
-  proc.stdin.write(JSON.stringify(obj) + "\n");
-  return obj.id;
-}
-function wait(id, ms = 15000) {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (responses.has(id)) return resolve(responses.get(id));
-      if (Date.now() - start > ms) return reject(new Error(`timeout waiting for response ${id}`));
-      setTimeout(tick, 50);
-    };
-    tick();
+/**
+ * Spawn one MCP server process and return its JSON-RPC helpers. Used twice: the
+ * fake-bridge suite (MCB_PORT = fake port) and the MCB_LIVE=1 world block (real
+ * bridge). "Exited early" stays fatal for both — a crashed server must not be
+ * reported as a timeout.
+ */
+function startMcp(env) {
+  const child = spawn(process.execPath, ["dist/index.js"], { stdio: ["pipe", "pipe", "pipe"], env });
+  let outBuf = "";
+  const responses = new Map();
+  child.stdout.on("data", (chunk) => {
+    outBuf += chunk;
+    let idx;
+    while ((idx = outBuf.indexOf("\n")) >= 0) {
+      const line = outBuf.slice(0, idx).trim();
+      outBuf = outBuf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id !== undefined) responses.set(msg.id, msg);
+      } catch { /* ignore */ }
+    }
   });
+  child.stderr.on("data", (d) => process.stderr.write(d));
+  child.on("exit", (code) => {
+    console.error(`MCP server exited early (code=${code})`);
+    process.exit(1);
+  });
+  return {
+    send(obj) {
+      child.stdin.write(JSON.stringify(obj) + "\n");
+      return obj.id;
+    },
+    wait(id, ms = 15000) {
+      const start = Date.now();
+      return new Promise((resolve, reject) => {
+        const tick = () => {
+          if (responses.has(id)) return resolve(responses.get(id));
+          if (Date.now() - start > ms) return reject(new Error(`timeout waiting for response ${id}`));
+          setTimeout(tick, 50);
+        };
+        tick();
+      });
+    },
+    async call(name, args, id, ms = 30000) {
+      this.send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      const r = await this.wait(id, ms);
+      const result = r.result ?? {};
+      const text = result.content?.find((c) => c.type === "text")?.text ?? "";
+      return { result, text };
+    },
+    stop() {
+      child.removeAllListeners("exit");
+      child.kill();
+    },
+  };
 }
+
+const mcp = startMcp({ ...process.env, MCB_PORT: String(PORT) });
+const send = (obj) => mcp.send(obj);
+const wait = (id, ms) => mcp.wait(id, ms);
 
 send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
   protocolVersion: "2024-11-05", capabilities: {},
@@ -836,9 +870,16 @@ if (JSON.stringify(Object.keys(watchStartParams).sort())
 }
 console.log("mc_watch_start(minimal) ok: only required keys on the wire");
 
+// 20-24. World lifecycle (protocol §8, v0.5.4): fake-bridge wire shape +
+// assertions live in world-ops.mjs (keeps this script readable).
+await runWorldCreateDeleteChecks(send, wait);
+
+// 25. Real-machine world path (mc_world_create -> mc_status -> mc_world_delete).
+// MCB_LIVE=1 only; a plain run prints the skip line and stays green.
+await runLiveWorldPath(startMcp);
+
 fs.unlinkSync(SHOT_PATH);
-proc.removeAllListeners("exit");
-proc.kill();
+mcp.stop();
 server.close();
 console.log("INTEGRATION TEST PASS");
 process.exit(0);
