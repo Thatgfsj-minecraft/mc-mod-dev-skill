@@ -1,6 +1,7 @@
 package com.thatgfsjminecraft.mcb;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -48,7 +49,10 @@ final class McbServer {
         }
     }
 
-    private static final Gson GSON = new Gson();
+    // serializeNulls(): protocol fields declared as nullable must appear as an
+    // explicit JSON null (e.g. §8.1 time_locked when lock_time=null). Gson drops
+    // JsonNull members by default, which would silently change the response shape.
+    private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     /** §1: a request line above this cap is a protocol violation — hang up. */
     private static final int MAX_LINE_CHARS = 1 << 20;
     /** §3.4 volume limit, enforced on the TCP thread before any main-thread hop. */
@@ -685,6 +689,26 @@ final class McbServer {
                     // session state, so this can answer on the TCP thread.
                     sendOk(id, WatchEngine.stopWatch(watchId, this));
                 }
+                // ---------------------------------------------------------------
+                // §8 world.create / world.delete (v0.5.4). Parameter validation
+                // happens here on the TCP thread; the rest of the work (disconnect,
+                // directory delete, vanilla world creation, server-side rules) is
+                // driven asynchronously by McbWorldOps on the client tick. The
+                // response is sent from there — never from this thread.
+                // ---------------------------------------------------------------
+                case "world.create" -> {
+                    McbWorldOps.CreateRequest req = McbWorldOps.parseCreate(params);
+                    McbWorldOps.startCreate(id, req, data -> sendOk(id, data),
+                            (code, message) -> sendError(id, code, message));
+                    // §8.7.5: TIMEOUT must stay the only answer if the flow overruns.
+                    watchdog(id, req.timeoutMs(), "world.create", () -> McbWorldOps.onTimeout(id));
+                }
+                case "world.delete" -> {
+                    McbWorldOps.DeleteRequest req = McbWorldOps.parseDelete(params);
+                    McbWorldOps.startDelete(id, req, data -> sendOk(id, data),
+                            (code, message) -> sendError(id, code, message));
+                    watchdog(id, req.timeoutMs(), "world.delete", () -> McbWorldOps.onTimeout(id));
+                }
                 default -> sendError(id, "BAD_OP", "unknown op: " + op);
             }
         }
@@ -697,10 +721,22 @@ final class McbServer {
          * no-op once the real answer is out (§2.2 exactly one response).
          */
         private void watchdog(long id, int timeoutMs, String what) {
+            watchdog(id, timeoutMs, what, () -> {});
+        }
+
+        /**
+         * Watchdog with an abort hook (§8.7.5): used by world.* so that after the
+         * TIMEOUT response the state machine stops and cleans up instead of
+         * running to completion behind the client's back. The hook only marks the
+         * in-flight request — it never sends anything, so response uniqueness is
+         * preserved by {@code responded}.
+         */
+        private void watchdog(long id, int timeoutMs, String what, Runnable onTimeout) {
             LOG_WAIT_POOL.submit(() -> {
                 try {
                     Thread.sleep(timeoutMs);
                     if (!closed) sendError(id, "TIMEOUT", what + " exceeded " + timeoutMs + "ms");
+                    onTimeout.run();
                 } catch (InterruptedException ignored) {
                 }
             });
