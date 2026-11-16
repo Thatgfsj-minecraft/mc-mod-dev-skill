@@ -467,9 +467,14 @@ final class McbHandlers {
     }
 
     // =====================================================================
-    // §3.9 command.run — runs on the integrated-server thread.
+    // §3.9 / §2.1 command.run — runs on the integrated-server thread.
     // =====================================================================
-    static JsonObject commandRun(net.minecraft.server.MinecraftServer server, String command) {
+    /**
+     * @param side which channel actually executed the command ("server" from here,
+     *             "client" is answered by McbServer directly); echoed back in the
+     *             response so the caller can tell the two paths apart (§2.1).
+     */
+    static JsonObject commandRun(net.minecraft.server.MinecraftServer server, String command, String side) {
         // Protocol §3.9: collect feedback through a tiny CommandSource so the
         // AI sees what the command actually said instead of guessing.
         // Verified 1.21.11 (javap, see version card bridge.md):
@@ -486,6 +491,9 @@ final class McbHandlers {
         var dispatcher = server.getCommands().getDispatcher();
         boolean success;
         String errorText = null;
+        // §2.1: Brigadier's int result (1 for most "did it" commands, the affected
+        // count for list/count style commands). null on any failure path.
+        Integer returnValue = null;
         try {
             var parse = dispatcher.parse(command, stack);
             var reader = parse.getReader();
@@ -495,7 +503,7 @@ final class McbHandlers {
                 errorText = "Incorrect argument at position " + cursor + ": ..." + command.substring(0, cursor);
                 success = false;
             } else {
-                dispatcher.execute(parse);
+                returnValue = dispatcher.execute(parse);
                 success = true;
             }
         } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
@@ -518,13 +526,27 @@ final class McbHandlers {
             text = text.substring(0, 8192) + "...(truncated)";
         }
         o.addProperty("resultText", text);
-        // §3.9: individual feedback lines (what the command actually printed),
-        // so an AI can parse discrete outputs instead of one blob.
-        JsonArray feedbackArr = new JsonArray();
-        for (String l : feedbackLines) {
-            feedbackArr.add(l);
+        // ---- §3.9 feedback + §2.1 additive fields (v0.5.1, protocol v1) ----
+        // feedback (legacy name) and messages (design-document name) MUST always
+        // be identical, so both are the SAME array instance: on success it holds
+        // the lines the command printed, on failure it is empty — the failure
+        // reason lives in resultText (§2.1: "失败 ... messages=[]").
+        JsonArray lines = new JsonArray();
+        if (success) {
+            for (String l : feedbackLines) {
+                lines.add(l);
+            }
         }
-        o.add("feedback", feedbackArr);
+        o.add("feedback", lines);
+        o.add("messages", lines);
+
+        // returnValue: the Brigadier result; null whenever success=false.
+        if (returnValue == null) {
+            o.add("returnValue", null);
+        } else {
+            o.addProperty("returnValue", returnValue.intValue());
+        }
+        o.addProperty("side", side);
         return o;
     }
 
