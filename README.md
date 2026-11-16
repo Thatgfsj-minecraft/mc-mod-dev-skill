@@ -42,7 +42,8 @@ references/
   environment-discovery.md          Phase 0 侦察手册（检查清单、信号判据、冲突处理）
   api-verification.md               API 核实规程（找 jar、读源码、记忆陷阱清单）
   pitfalls.md                       踩坑手册（通用坑 + 案例研究）
-  e2e-testing.md                    专用服务器 + 服务端权威断言的 E2E 体系
+  e2e-testing.md                    专用服务器 + 服务端权威断言的 E2E 体系（含客户端 run 目录预置）
+  fast-iteration.md                 分级热迭代：L1 数据 / L2 资源 / L3 代码 HotSwap / L4 完整重启
   debug-mcp.md                      实时调试基建（MCB）使用指南
   debug-mcp/
     protocol.md                     MCB v1 线协议规范（TCP + NDJSON，环境无关契约）
